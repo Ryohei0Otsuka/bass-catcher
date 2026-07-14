@@ -12,7 +12,6 @@ Set-Location $ProjectRoot
 
 Write-Host ""
 Write-Host "BASS CATCHER WINDOWS BUILD" -ForegroundColor Cyan
-Write-Host "Project: $ProjectRoot"
 Write-Host "Mode: $Mode"
 Write-Host "AI: $AI"
 Write-Host ""
@@ -34,20 +33,18 @@ if (-not (Test-Path "assets\bass_catcher.ico")) {
     throw "assets\bass_catcher.ico was not found."
 }
 
-Write-Host "Installing or updating PyInstaller..." -ForegroundColor Cyan
-python -m pip install --upgrade pyinstaller
+python -m pip install --upgrade pyinstaller pyinstaller-hooks-contrib
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller installation failed."
 }
 
-Write-Host "Checking required modules..." -ForegroundColor Cyan
 python -c "import PySide6, numpy, scipy, librosa, soundfile, reportlab"
 if ($LASTEXITCODE -ne 0) {
     throw "Base dependencies are incomplete. Run .\install.ps1 first."
 }
 
 if ($AI) {
-    python -c "import basic_pitch, tensorflow, torch, demucs"
+    python -c "import basic_pitch, tensorflow, torch, demucs; from demucs.api import Separator"
     if ($LASTEXITCODE -ne 0) {
         throw "AI dependencies are incomplete. Run .\install.ps1 -AI first."
     }
@@ -62,9 +59,8 @@ $BuildArguments = @(
     "--paths", ".",
     "--icon", "assets\bass_catcher.ico",
     "--add-data", "assets;assets",
-    "--collect-all", "librosa",
-    "--collect-all", "soundfile",
-    "--collect-all", "reportlab",
+    "--collect-data", "librosa",
+    "--collect-data", "reportlab",
     "--copy-metadata", "librosa",
     "--copy-metadata", "soundfile",
     "--copy-metadata", "reportlab"
@@ -78,30 +74,56 @@ else {
 }
 
 if ($AI) {
+    # Basic Pitch is imported dynamically, so declare the package and model data.
     $BuildArguments += @(
-        "--collect-all", "basic_pitch",
-        "--collect-all", "tensorflow",
-        "--collect-all", "keras",
-        "--collect-all", "demucs",
-        "--collect-all", "torch",
-        "--collect-all", "pretty_midi",
-        "--collect-all", "mir_eval",
-        "--collect-all", "resampy",
-        "--collect-all", "sphn",
+        "--collect-submodules", "basic_pitch",
+        "--collect-data", "basic_pitch",
+        "--hidden-import", "basic_pitch.inference",
+        "--hidden-import", "tensorflow",
+        "--hidden-import", "tensorflow.python.saved_model",
+        "--hidden-import", "keras",
+        "--hidden-import", "pretty_midi",
+        "--hidden-import", "mir_eval",
+        "--hidden-import", "resampy",
         "--copy-metadata", "basic-pitch",
         "--copy-metadata", "tensorflow",
         "--copy-metadata", "keras",
-        "--copy-metadata", "demucs",
-        "--copy-metadata", "torch",
         "--copy-metadata", "pretty-midi",
         "--copy-metadata", "mir-eval",
         "--copy-metadata", "resampy"
+    )
+
+    # Demucs is also optional/dynamic. Collect Demucs itself, but let the
+    # official PyInstaller torch hook collect the PyTorch runtime.
+    $BuildArguments += @(
+        "--collect-submodules", "demucs",
+        "--collect-data", "demucs",
+        "--hidden-import", "demucs.api",
+        "--hidden-import", "demucs.apply",
+        "--hidden-import", "demucs.audio",
+        "--hidden-import", "demucs.pretrained",
+        "--hidden-import", "demucs.repo",
+        "--hidden-import", "torch",
+        "--hidden-import", "sphn",
+        "--copy-metadata", "demucs",
+        "--copy-metadata", "torch"
+    )
+
+    # These large PyTorch areas are for training, distributed execution,
+    # profiling, tests, and export. Bass Catcher only performs local inference.
+    $BuildArguments += @(
+        "--exclude-module", "torch.testing",
+        "--exclude-module", "torch.distributed",
+        "--exclude-module", "torch.onnx",
+        "--exclude-module", "torch.profiler",
+        "--exclude-module", "torch.quantization",
+        "--exclude-module", "torch.package",
+        "--exclude-module", "torch.utils.benchmark"
     )
 }
 
 $BuildArguments += "app\main.py"
 
-Write-Host ""
 Write-Host "Starting PyInstaller..." -ForegroundColor Cyan
 python -m PyInstaller @BuildArguments
 
@@ -120,6 +142,5 @@ else {
 }
 
 if ($AI) {
-    Write-Host "AI build includes TensorFlow and PyTorch and will be very large." -ForegroundColor Yellow
-    Write-Host "Demucs may download its separation model on first use." -ForegroundColor Yellow
+    Write-Host "Demucs downloads the selected model on first use." -ForegroundColor Yellow
 }

@@ -195,33 +195,45 @@ def _create_cache_dir(source: Path) -> Path:
 
 
 def _separate_bass_with_demucs(source: Path, cache_dir: Path) -> Path:
-    output_dir = cache_dir / "demucs"
-    command = [
-        sys.executable,
-        "-m",
-        "demucs.separate",
-        "--two-stems=bass",
-        "-n",
-        "htdemucs",
-        "-o",
-        str(output_dir),
-        str(source),
-    ]
-    completed = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        check=False,
-        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-    )
-    if completed.returncode != 0:
-        message = completed.stderr.strip() or completed.stdout.strip() or "Unknown Demucs error"
-        raise RuntimeError(message[-1200:])
+    """Separate the bass stem inside the current process.
 
-    candidates = list(output_dir.rglob("bass.wav"))
-    if not candidates:
-        raise FileNotFoundError("Demucsのbass.wavが見つかりません。")
-    return candidates[0]
+    Calling ``sys.executable -m demucs.separate`` does not work reliably once
+    the application is frozen as an EXE, because ``sys.executable`` points to
+    BassCatcher.exe rather than a normal Python interpreter.
+    """
+    from demucs.api import Separator, save_audio
+
+    output_dir = cache_dir / "demucs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "bass.wav"
+
+    separator = Separator(
+        model="htdemucs",
+        device="cpu",
+        shifts=1,
+        split=True,
+        overlap=0.25,
+        progress=False,
+        jobs=0,
+    )
+    _, separated = separator.separate_audio_file(source)
+
+    bass = separated.get("bass")
+    if bass is None:
+        raise RuntimeError("Demucsの解析結果にbassステムがありません。")
+
+    save_audio(
+        bass,
+        str(output_path),
+        samplerate=separator.samplerate,
+        clip="rescale",
+        bits_per_sample=16,
+    )
+
+    if not output_path.exists():
+        raise FileNotFoundError("Demucsのbass.wavを保存できませんでした。")
+
+    return output_path
 
 
 def _extract_bass_band(y: np.ndarray, sr: int) -> np.ndarray:
