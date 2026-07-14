@@ -139,8 +139,18 @@ def analyze_audio(
         key_is_minor=key_is_minor,
     )
 
-    roots: list[RootEvent] = []
     boundaries = _segment_boundaries(beat_times, duration)
+
+    progress(85, "ベースの発音タイミングを追跡しています")
+    cue_times = _estimate_root_cue_times(
+        bass=bass,
+        sr=sr,
+        boundaries=boundaries,
+        selected=selected,
+        ai_events=ai_events,
+    )
+
+    roots: list[RootEvent] = []
 
     for index, midi in enumerate(selected):
         start, end = boundaries[index], boundaries[index + 1]
@@ -160,6 +170,7 @@ def analyze_audio(
                 midi=midi,
                 confidence=float(confidence),
                 db=float(segment_db[index]),
+                cue_time=cue_times[index],
                 source=source_label,
             )
         )
@@ -509,6 +520,110 @@ def _score_segments(
 
     return all_candidates, segment_db
 
+
+
+def _estimate_root_cue_times(
+    bass: np.ndarray,
+    sr: int,
+    boundaries: np.ndarray,
+    selected: list[int | None],
+    ai_events: list[tuple[float, float, int, float]],
+) -> list[float | None]:
+    """Estimate when the bass actually attacks inside each beat segment.
+
+    The old notification path fired at every beat head, including sustained
+    notes. That produced a rigid metronome-like feel. This function uses bass
+    onsets and Basic Pitch note starts so notifications follow real attacks.
+    """
+
+    cue_hop = 256
+    onset_env = librosa.onset.onset_strength(
+        y=bass,
+        sr=sr,
+        hop_length=cue_hop,
+        aggregate=np.median,
+    )
+    onset_env = np.nan_to_num(onset_env, nan=0.0, posinf=0.0, neginf=0.0)
+
+    peak = float(np.max(onset_env)) if onset_env.size else 0.0
+    if peak > 0:
+        onset_env = onset_env / peak
+
+    onset_frames = librosa.onset.onset_detect(
+        onset_envelope=onset_env,
+        sr=sr,
+        hop_length=cue_hop,
+        units="frames",
+        backtrack=True,
+        pre_max=3,
+        post_max=3,
+        pre_avg=7,
+        post_avg=7,
+        delta=0.075,
+        wait=1,
+    )
+    onset_times = librosa.frames_to_time(
+        onset_frames,
+        sr=sr,
+        hop_length=cue_hop,
+    )
+    onset_strengths = np.array(
+        [
+            float(onset_env[min(max(int(frame), 0), len(onset_env) - 1)])
+            if len(onset_env)
+            else 0.0
+            for frame in onset_frames
+        ],
+        dtype=float,
+    )
+
+    cue_times: list[float | None] = []
+
+    for index, midi in enumerate(selected):
+        if midi is None:
+            cue_times.append(None)
+            continue
+
+        start = float(boundaries[index])
+        end = float(boundaries[index + 1])
+        search_start = max(0.0, start - 0.085)
+        search_end = max(search_start, end - 0.045)
+
+        # Basic Pitch note starts are the most direct cue when available.
+        matching_ai = [
+            event
+            for event in ai_events
+            if search_start <= event[0] < search_end
+            and event[2] % 12 == midi % 12
+        ]
+        if matching_ai:
+            chosen = max(matching_ai, key=lambda event: (event[3], -event[0]))
+            cue_times.append(max(0.0, float(chosen[0])))
+            continue
+
+        candidate_indices = np.where(
+            (onset_times >= search_start) & (onset_times < search_end)
+        )[0]
+        if candidate_indices.size:
+            best_index = max(
+                candidate_indices.tolist(),
+                key=lambda candidate: (
+                    onset_strengths[candidate],
+                    -onset_times[candidate],
+                ),
+            )
+            cue_times.append(max(0.0, float(onset_times[best_index])))
+            continue
+
+        # When the note changes but no reliable onset was found, keep one
+        # fallback cue at the beat head. Sustained notes remain silent.
+        previous_midi = selected[index - 1] if index > 0 else None
+        if index == 0 or previous_midi != midi:
+            cue_times.append(start)
+        else:
+            cue_times.append(None)
+
+    return cue_times
 
 def _smooth_root_sequence(
     candidates: list[dict[int | None, float]],

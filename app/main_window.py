@@ -70,8 +70,17 @@ class MainWindow(QMainWindow):
         self._pending_restore_position = 0
         self._pending_transform_tempo = 1.0
         self._pending_transform_semitones = 0
+        self._active_practice_tempo = 1.0
+        self._active_practice_semitones = 0
         self._last_notified_root_index: int | None = None
         self._detected_note_effects: dict[int, QSoundEffect] = {}
+        self._next_detected_cue_index = 0
+        self._last_cue_poll_position_ms = 0
+
+        self._detected_cue_timer = QTimer(self)
+        self._detected_cue_timer.setTimerType(Qt.PreciseTimer)
+        self._detected_cue_timer.setInterval(12)
+        self._detected_cue_timer.timeout.connect(self._poll_detected_note_cue)
 
         self.audio_output = QAudioOutput(self)
         self.audio_output.setVolume(0.82)
@@ -261,7 +270,7 @@ class MainWindow(QMainWindow):
 
         self.note_combo = QComboBox()
         self.note_combo.addItem("休符", None)
-        for midi in range(23, 61):
+        for midi in range(11, 73):
             self.note_combo.addItem(midi_to_note_name(midi), midi)
 
         self.apply_note_button = QPushButton("選択音を反映")
@@ -363,10 +372,38 @@ class MainWindow(QMainWindow):
         self.detected_note_sound_check = QCheckBox("検出音をピアノで鳴らす")
         self.detected_note_sound_check.setChecked(False)
         self.detected_note_sound_check.setToolTip(
-            "再生中、拍ごとの検出ルート音を短いピアノ音で通知します"
+            "再生中、ベースの実際の発音タイミングに合わせて検出音を通知します"
         )
 
         controls.addWidget(self.detected_note_sound_check)
+
+        piano_volume_label = QLabel("通知音量")
+        piano_volume_label.setObjectName("controlLabel")
+        self.detected_note_volume_slider = QSlider(Qt.Horizontal)
+        self.detected_note_volume_slider.setRange(0, 100)
+        self.detected_note_volume_slider.setValue(34)
+        self.detected_note_volume_slider.setFixedWidth(100)
+        self.detected_note_volume_slider.setToolTip("検出音のピアノ通知だけの音量です")
+        self.detected_note_volume_value = QLabel("034%")
+        self.detected_note_volume_value.setObjectName("controlValue")
+
+        controls.addWidget(piano_volume_label)
+        controls.addWidget(self.detected_note_volume_slider)
+        controls.addWidget(self.detected_note_volume_value)
+
+        cue_lead_label = QLabel("通知先行")
+        cue_lead_label.setObjectName("controlLabel")
+        self.detected_note_lead_ms = QSpinBox()
+        self.detected_note_lead_ms.setRange(0, 200)
+        self.detected_note_lead_ms.setValue(65)
+        self.detected_note_lead_ms.setSingleStep(5)
+        self.detected_note_lead_ms.setSuffix(" ms")
+        self.detected_note_lead_ms.setToolTip(
+            "通知音が遅く聞こえる場合に増やします。端末ごとの再生遅延を補正します"
+        )
+
+        controls.addWidget(cue_lead_label)
+        controls.addWidget(self.detected_note_lead_ms)
         controls.addStretch(1)
         controls.addWidget(volume_label)
         controls.addWidget(self.volume_slider)
@@ -391,7 +428,7 @@ class MainWindow(QMainWindow):
         self.key_shift.setValue(0)
         self.key_shift.setSuffix(" 半音")
 
-        self.render_button = QPushButton("練習音源を作成")
+        self.render_button = QPushButton("テンポ・キーを反映")
         self.render_button.setEnabled(False)
         self.reset_audio_button = QPushButton("原曲に戻す")
         self.reset_audio_button.setEnabled(False)
@@ -399,6 +436,9 @@ class MainWindow(QMainWindow):
         transform.addWidget(self.key_shift)
         transform.addWidget(self.render_button)
         transform.addWidget(self.reset_audio_button)
+        self.transform_state_label = QLabel("原曲｜キー変更なし")
+        self.transform_state_label.setObjectName("mutedLabel")
+        transform.addWidget(self.transform_state_label)
         transform.addStretch(1)
 
         layout.addLayout(seek)
@@ -421,7 +461,11 @@ class MainWindow(QMainWindow):
         self.loop_b_button.clicked.connect(self._set_loop_b)
 
         self.volume_slider.valueChanged.connect(self._set_volume)
+        self.detected_note_volume_slider.valueChanged.connect(
+            self._set_detected_note_volume
+        )
         self.tempo_ratio.valueChanged.connect(self._set_playback_rate)
+        self.key_shift.valueChanged.connect(self._key_shift_changed)
         self.position_slider.sliderMoved.connect(self._seek_to_position)
 
         self.player.durationChanged.connect(self._duration_changed)
@@ -463,7 +507,11 @@ class MainWindow(QMainWindow):
         self.sources = {"原曲": path}
         self.analysis_result = None
         self.selected_root_index = None
+        self._active_practice_tempo = 1.0
+        self._active_practice_semitones = 0
         self._last_notified_root_index = None
+        self._next_detected_cue_index = 0
+        self._last_cue_poll_position_ms = 0
 
         self.source_combo.blockSignals(True)
         self.source_combo.clear()
@@ -474,7 +522,10 @@ class MainWindow(QMainWindow):
         self.tempo_ratio.blockSignals(True)
         self.tempo_ratio.setValue(1.0)
         self.tempo_ratio.blockSignals(False)
+        self.key_shift.blockSignals(True)
         self.key_shift.setValue(0)
+        self.key_shift.blockSignals(False)
+        self.transform_state_label.setText("原曲｜キー変更なし")
         self.player.setPlaybackRate(1.0)
         self.player.setSource(QUrl.fromLocalFile(str(path)))
 
@@ -532,6 +583,7 @@ class MainWindow(QMainWindow):
 
     def _analysis_completed(self, result: AnalysisResult) -> None:
         self.analysis_result = result
+        self._sync_detected_cue_cursor()
         self.timeline.set_result(result)
         self._populate_root_table()
         self.key_chip.setText(f"キー {self._display_key_name(result.key_name)}")
@@ -653,8 +705,25 @@ class MainWindow(QMainWindow):
         path = self.sources.get(label)
         if path is None or not path.exists():
             return
+
+        if label == "練習音源":
+            self.key_shift.blockSignals(True)
+            self.key_shift.setValue(self._active_practice_semitones)
+            self.key_shift.blockSignals(False)
+            self.transform_state_label.setText(
+                "練習音源｜"
+                f"キー {self._active_practice_semitones:+d}半音｜"
+                f"生成テンポ {self._active_practice_tempo:.2f}倍"
+            )
+        else:
+            self.key_shift.blockSignals(True)
+            self.key_shift.setValue(0)
+            self.key_shift.blockSignals(False)
+            self.transform_state_label.setText(f"{label}｜キー変更なし")
+
         position = self.player.position()
         self._last_notified_root_index = None
+        self._sync_detected_cue_cursor(position)
         was_playing = self.player.playbackState() == QMediaPlayer.PlayingState
         self.player.stop()
         self.player.setSource(QUrl.fromLocalFile(str(path)))
@@ -684,6 +753,7 @@ class MainWindow(QMainWindow):
 
     def _seek_to_position(self, position_ms: int) -> None:
         self._last_notified_root_index = None
+        self._sync_detected_cue_cursor(position_ms)
         self.player.setPosition(position_ms)
 
     def _seek_relative(self, delta_ms: int) -> None:
@@ -706,6 +776,22 @@ class MainWindow(QMainWindow):
         self.audio_output.setVolume(value / 100)
         self.volume_value.setText(f"{value:03d}%")
 
+    def _set_detected_note_volume(self, value: int) -> None:
+        volume = max(0.0, min(1.0, value / 100.0))
+        for effect in self._detected_note_effects.values():
+            effect.setVolume(volume)
+        self.detected_note_volume_value.setText(f"{value:03d}%")
+
+    def _key_shift_changed(self, value: int) -> None:
+        if self.source_path is None:
+            return
+        self.transform_state_label.setText(
+            f"未反映｜キー {value:+d}半音｜「テンポ・キーを反映」を押してください"
+        )
+        self.statusBar().showMessage(
+            f"キー変更 {value:+d}半音は、練習音源の生成後に反映されます"
+        )
+
     def _set_playback_rate(self, value: float) -> None:
         """Apply the tempo control immediately to the active player.
 
@@ -717,7 +803,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"再生テンポ：{rate:.2f}倍")
 
     def _prepare_detected_note_sounds(self) -> None:
-        """Create and preload short piano-like WAV notes for B0 through C4."""
+        """Create and preload piano-like notes for shifted B0 through C4."""
         cache_dir = Path(tempfile.gettempdir()) / "BassCatcher" / "detected_notes"
         cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -728,7 +814,7 @@ class MainWindow(QMainWindow):
 
             effect = QSoundEffect(self)
             effect.setLoopCount(1)
-            effect.setVolume(0.34)
+            effect.setVolume(self.detected_note_volume_slider.value() / 100.0)
             effect.setSource(QUrl.fromLocalFile(str(wav_path)))
             self._detected_note_effects[midi] = effect
 
@@ -779,7 +865,11 @@ class MainWindow(QMainWindow):
             self._last_notified_root_index = index
             return
 
-        effect = self._detected_note_effects.get(root.midi)
+        note_midi = root.midi
+        if self.source_combo.currentText() == "練習音源":
+            note_midi += self._active_practice_semitones
+
+        effect = self._detected_note_effects.get(note_midi)
         if effect is None:
             return
 
@@ -789,12 +879,86 @@ class MainWindow(QMainWindow):
 
     def _detected_note_sound_toggled(self, enabled: bool) -> None:
         self._last_notified_root_index = None
+        self._sync_detected_cue_cursor()
+
         if not enabled:
+            self._detected_cue_timer.stop()
             for effect in self._detected_note_effects.values():
                 effect.stop()
             self.statusBar().showMessage("検出音のピアノ通知：OFF")
             return
-        self.statusBar().showMessage("検出音のピアノ通知：ON")
+
+        if self.player.playbackState() == QMediaPlayer.PlayingState:
+            self._detected_cue_timer.start()
+        self.statusBar().showMessage("検出音のピアノ通知：ON｜実音タイミング追従")
+
+    def _root_cue_time(self, index: int) -> float | None:
+        if self.analysis_result is None:
+            return None
+        if not 0 <= index < len(self.analysis_result.roots):
+            return None
+
+        root = self.analysis_result.roots[index]
+        cue_time = getattr(root, "cue_time", None)
+        if cue_time is None:
+            return None
+        return max(0.0, float(cue_time))
+
+    def _sync_detected_cue_cursor(self, position_ms: int | None = None) -> None:
+        if self.analysis_result is None:
+            self._next_detected_cue_index = 0
+            self._last_cue_poll_position_ms = 0
+            return
+
+        if position_ms is None:
+            position_ms = self.player.position()
+
+        rate = max(0.5, float(self.player.playbackRate()))
+        lead_seconds = (self.detected_note_lead_ms.value() / 1000.0) * rate
+        threshold = max(0.0, position_ms / 1000.0 + lead_seconds - 0.035)
+
+        index = 0
+        while index < len(self.analysis_result.roots):
+            cue_time = self._root_cue_time(index)
+            if cue_time is not None and cue_time >= threshold:
+                break
+            index += 1
+
+        self._next_detected_cue_index = index
+        self._last_cue_poll_position_ms = int(position_ms)
+
+    def _poll_detected_note_cue(self) -> None:
+        if not self.detected_note_sound_check.isChecked():
+            return
+        if self.player.playbackState() != QMediaPlayer.PlayingState:
+            return
+        if self.analysis_result is None:
+            return
+
+        position_ms = self.player.position()
+        if position_ms + 120 < self._last_cue_poll_position_ms:
+            self._sync_detected_cue_cursor(position_ms)
+
+        rate = max(0.5, float(self.player.playbackRate()))
+        lead_seconds = (self.detected_note_lead_ms.value() / 1000.0) * rate
+        trigger_time = position_ms / 1000.0 + lead_seconds
+
+        while self._next_detected_cue_index < len(self.analysis_result.roots):
+            cue_time = self._root_cue_time(self._next_detected_cue_index)
+
+            if cue_time is None:
+                self._next_detected_cue_index += 1
+                continue
+            if cue_time > trigger_time:
+                break
+
+            self._play_detected_note(
+                self._next_detected_cue_index,
+                force=True,
+            )
+            self._next_detected_cue_index += 1
+
+        self._last_cue_poll_position_ms = position_ms
 
     def _duration_changed(self, duration_ms: int) -> None:
         self.position_slider.setRange(0, max(0, duration_ms))
@@ -820,8 +984,6 @@ class MainWindow(QMainWindow):
             if index is not None:
                 if index != self.selected_root_index:
                     self._select_root(index)
-                if self.player.playbackState() == QMediaPlayer.PlayingState:
-                    self._play_detected_note(index)
 
     def _root_index_for_position(self, seconds: float) -> int | None:
         if self.analysis_result is None:
@@ -835,12 +997,18 @@ class MainWindow(QMainWindow):
         if state == QMediaPlayer.PlayingState:
             self.play_button.setText("Ⅱ 一時停止")
             self.system_status.setText("● 再生中")
+            self._sync_detected_cue_cursor()
+            if self.detected_note_sound_check.isChecked():
+                self._detected_cue_timer.start()
         elif state == QMediaPlayer.PausedState:
+            self._detected_cue_timer.stop()
             self.play_button.setText("▶ 再生")
             self.system_status.setText("● 一時停止中")
         else:
+            self._detected_cue_timer.stop()
             self.play_button.setText("▶ 再生")
             self._last_notified_root_index = None
+            self._sync_detected_cue_cursor(0)
             if self.source_path is not None:
                 self.system_status.setText("● 音源読込済")
 
@@ -888,14 +1056,18 @@ class MainWindow(QMainWindow):
     def _transform_completed(self, path: str) -> None:
         rendered_path = Path(path)
         self.sources["練習音源"] = rendered_path
+        self._active_practice_tempo = self._pending_transform_tempo
+        self._active_practice_semitones = self._pending_transform_semitones
         self._refresh_source_combo()
 
-        # Tempo/key are already baked into the rendered WAV. Reset live
-        # playback to 1.00x so the tempo is not applied a second time.
+        # Tempo/key are already baked into the rendered WAV. Live playback is
+        # returned to 1.00x, while the applied key remains visible in the UI.
         self.tempo_ratio.blockSignals(True)
         self.tempo_ratio.setValue(1.0)
         self.tempo_ratio.blockSignals(False)
-        self.key_shift.setValue(0)
+        self.key_shift.blockSignals(True)
+        self.key_shift.setValue(self._active_practice_semitones)
+        self.key_shift.blockSignals(False)
         self.player.setPlaybackRate(1.0)
 
         # Force a reload even when "練習音源" was already selected.
@@ -921,7 +1093,10 @@ class MainWindow(QMainWindow):
         if "原曲" in self.sources:
             self.source_combo.setCurrentText("原曲")
         self.tempo_ratio.setValue(1.0)
+        self.key_shift.blockSignals(True)
         self.key_shift.setValue(0)
+        self.key_shift.blockSignals(False)
+        self.transform_state_label.setText("原曲｜キー変更なし")
         self.player.setPlaybackRate(1.0)
 
     @staticmethod
@@ -1006,6 +1181,7 @@ class MainWindow(QMainWindow):
                 "解析結果は開けますが、元音源の再生はできません。",
             )
             self.analysis_result = result
+            self._sync_detected_cue_cursor()
             self.timeline.set_result(result)
             self._populate_root_table()
             self._set_export_enabled(True)
@@ -1013,6 +1189,7 @@ class MainWindow(QMainWindow):
 
         self._load_audio_path(source)
         self.analysis_result = result
+        self._sync_detected_cue_cursor()
         self.timeline.set_result(result)
         self._populate_root_table()
         self.key_chip.setText(f"キー {self._display_key_name(result.key_name)}")
