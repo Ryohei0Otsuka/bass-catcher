@@ -186,7 +186,8 @@ class PitchTimeline(QWidget):
             font = QFont("Consolas", 8)
             font.setBold(True)
             painter.setFont(font)
-            painter.drawText(rect.adjusted(3, 0, -3, 0), Qt.AlignCenter, root.note_name)
+            label = "休符" if root.midi is None else root.note_name
+            painter.drawText(rect.adjusted(3, 0, -3, 0), Qt.AlignCenter, label)
 
     def _draw_standby_signal(self, painter: QPainter) -> None:
         center_y = self.height() * 0.68
@@ -227,12 +228,12 @@ class PitchTimeline(QWidget):
 
     def _draw_state_text(self, painter: QPainter) -> None:
         if self._result is None:
-            heading = "ROOT SIGNAL STANDBY"
-            subtext = "IMPORT AUDIO / RUN ANALYSIS"
+            heading = "ルート音解析 待機中"
+            subtext = "音源を読み込み、ルート音解析を実行してください"
         else:
             return
 
-        heading_font = QFont("Consolas", 15)
+        heading_font = QFont("Yu Gothic UI", 15)
         heading_font.setBold(True)
         painter.setFont(heading_font)
         painter.setPen(QColor("#BFFAFF"))
@@ -242,7 +243,7 @@ class PitchTimeline(QWidget):
             heading,
         )
 
-        painter.setFont(QFont("Consolas", 9))
+        painter.setFont(QFont("Yu Gothic UI", 9))
         painter.setPen(QColor("#697F8C"))
         painter.drawText(
             QRectF(20, self.height() * 0.36 + 34, self.width() - 40, 24),

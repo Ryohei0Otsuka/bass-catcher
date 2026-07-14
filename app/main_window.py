@@ -52,7 +52,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
 
-        self.setWindowTitle("Bass Catcher // Root Signal Tracker")
+        self.setWindowTitle("Bass Catcher｜ベース耳コピ支援")
         self.resize(1480, 900)
         self.setMinimumSize(1120, 700)
 
@@ -77,7 +77,7 @@ class MainWindow(QMainWindow):
         self._apply_styles()
         self._update_optional_engine_labels()
 
-        self.statusBar().showMessage("SYSTEM READY // IMPORT AUDIO")
+        self.statusBar().showMessage("準備完了｜音源を読み込んでください")
 
     def _build_ui(self) -> None:
         central = QWidget(self)
@@ -113,19 +113,19 @@ class MainWindow(QMainWindow):
         title.setObjectName("appTitle")
         self._add_neon_shadow(title, "#00F6FF", 24)
 
-        subtitle = QLabel("LOW-FREQUENCY ROOT SIGNAL TRACKER")
+        subtitle = QLabel("ベースルート音解析・耳コピ支援")
         subtitle.setObjectName("appSubtitle")
 
         title_layout.addWidget(title)
         title_layout.addWidget(subtitle)
 
-        self.system_status = QLabel("● SYSTEM READY")
+        self.system_status = QLabel("● 待機中")
         self.system_status.setObjectName("systemStatus")
 
-        self.load_session_button = QPushButton("LOAD SESSION")
+        self.load_session_button = QPushButton("解析を読み込む")
         self.load_session_button.setObjectName("headerButton")
 
-        self.import_button = QPushButton("IMPORT AUDIO")
+        self.import_button = QPushButton("音源を読み込む")
         self.import_button.setObjectName("primaryButton")
 
         header.addLayout(title_layout)
@@ -143,24 +143,24 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(17, 10, 17, 10)
         layout.setSpacing(12)
 
-        label = QLabel("INPUT SIGNAL")
+        label = QLabel("読み込み音源")
         label.setObjectName("sectionLabel")
 
-        self.file_label = QLabel("NO AUDIO FILE LINKED")
+        self.file_label = QLabel("音源が選択されていません")
         self.file_label.setObjectName("fileLabel")
         self.file_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         self.source_combo = QComboBox()
         self.source_combo.setMinimumWidth(150)
-        self.source_combo.addItem("ORIGINAL")
+        self.source_combo.addItem("原曲")
 
-        self.duration_chip = QLabel("DURATION --:--")
+        self.duration_chip = QLabel("長さ --:--")
         self.duration_chip.setObjectName("dataChip")
 
         layout.addWidget(label)
         layout.addWidget(self._divider())
         layout.addWidget(self.file_label, 1)
-        layout.addWidget(QLabel("MONITOR"))
+        layout.addWidget(QLabel("再生音源"))
         layout.addWidget(self.source_combo)
         layout.addWidget(self.duration_chip)
         return panel
@@ -172,10 +172,10 @@ class MainWindow(QMainWindow):
         layout.setSpacing(7)
 
         header = QHBoxLayout()
-        axis = QLabel("PITCH AXIS // B0 — C4")
+        axis = QLabel("音程表示 // B0 — C4")
         axis.setObjectName("sectionLabel")
 
-        self.analysis_state_label = QLabel("ANALYSIS ENGINE: STANDBY")
+        self.analysis_state_label = QLabel("解析：待機中")
         self.analysis_state_label.setObjectName("analysisState")
 
         header.addWidget(axis)
@@ -202,19 +202,21 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(13, 12, 13, 12)
         layout.setSpacing(10)
 
-        title = QLabel("ANALYSIS / CONTROL")
+        title = QLabel("解析・編集")
         title.setObjectName("sectionLabel")
 
         mode_layout = QGridLayout()
         mode_layout.setHorizontalSpacing(8)
         mode_layout.setVerticalSpacing(8)
 
-        mode_layout.addWidget(QLabel("MODE"), 0, 0)
+        mode_layout.addWidget(QLabel("解析モード"), 0, 0)
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Precision DSP", "AI Hybrid", "Fast"])
+        self.mode_combo.addItem("高精度解析", "Precision DSP")
+        self.mode_combo.addItem("AI併用解析", "AI Hybrid")
+        self.mode_combo.addItem("高速解析", "Fast")
         mode_layout.addWidget(self.mode_combo, 0, 1)
 
-        self.demucs_check = QCheckBox("DEMUCS BASS SEPARATION")
+        self.demucs_check = QCheckBox("Demucsでベースを分離")
         mode_layout.addWidget(self.demucs_check, 1, 0, 1, 2)
 
         self.engine_info = QLabel("")
@@ -222,7 +224,7 @@ class MainWindow(QMainWindow):
         self.engine_info.setWordWrap(True)
         mode_layout.addWidget(self.engine_info, 2, 0, 1, 2)
 
-        self.analyze_button = QPushButton("RUN ROOT ANALYSIS")
+        self.analyze_button = QPushButton("ルート音を解析")
         self.analyze_button.setObjectName("actionButton")
         self.analyze_button.setEnabled(False)
 
@@ -233,30 +235,30 @@ class MainWindow(QMainWindow):
 
         stats = QGridLayout()
         stats.setSpacing(7)
-        self.root_chip = QLabel("ROOT --")
+        self.root_chip = QLabel("ルート --")
         self.root_chip.setObjectName("dataChip")
-        self.key_chip = QLabel("KEY --")
+        self.key_chip = QLabel("キー --")
         self.key_chip.setObjectName("dataChip")
         self.tempo_chip = QLabel("BPM ---")
         self.tempo_chip.setObjectName("dataChip")
-        self.confidence_chip = QLabel("CONF --")
+        self.confidence_chip = QLabel("確信度 --")
         self.confidence_chip.setObjectName("dataChip")
         stats.addWidget(self.root_chip, 0, 0)
         stats.addWidget(self.key_chip, 0, 1)
         stats.addWidget(self.tempo_chip, 1, 0)
         stats.addWidget(self.confidence_chip, 1, 1)
 
-        edit_group = QGroupBox("ROOT CORRECTION")
+        edit_group = QGroupBox("ルート音を修正")
         edit_layout = QGridLayout(edit_group)
 
         self.note_combo = QComboBox()
-        self.note_combo.addItem("REST", None)
+        self.note_combo.addItem("休符", None)
         for midi in range(23, 61):
             self.note_combo.addItem(midi_to_note_name(midi), midi)
 
-        self.apply_note_button = QPushButton("APPLY")
+        self.apply_note_button = QPushButton("選択音を反映")
         self.apply_note_button.setEnabled(False)
-        self.mark_rest_button = QPushButton("REST")
+        self.mark_rest_button = QPushButton("休符にする")
         self.mark_rest_button.setEnabled(False)
 
         edit_layout.addWidget(self.note_combo, 0, 0, 1, 2)
@@ -264,7 +266,7 @@ class MainWindow(QMainWindow):
         edit_layout.addWidget(self.mark_rest_button, 1, 1)
 
         self.root_table = QTableWidget(0, 5)
-        self.root_table.setHorizontalHeaderLabels(["BEAT", "TIME", "ROOT", "CONF", "dB"])
+        self.root_table.setHorizontalHeaderLabels(["拍", "時刻", "ルート", "確信度", "dB"])
         self.root_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.root_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.root_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -273,10 +275,10 @@ class MainWindow(QMainWindow):
         self.root_table.horizontalHeader().setStretchLastSection(True)
 
         export_layout = QGridLayout()
-        self.pdf_button = QPushButton("PDF")
-        self.csv_button = QPushButton("CSV")
-        self.musicxml_button = QPushButton("MUSICXML")
-        self.save_session_button = QPushButton("SAVE SESSION")
+        self.pdf_button = QPushButton("PDF出力")
+        self.csv_button = QPushButton("CSV出力")
+        self.musicxml_button = QPushButton("MusicXML出力")
+        self.save_session_button = QPushButton("解析を保存")
         for button in (
             self.pdf_button,
             self.csv_button,
@@ -320,19 +322,19 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         controls.setSpacing(8)
 
-        self.play_button = QPushButton("▶ PLAY")
-        self.stop_button = QPushButton("■ STOP")
-        self.back_button = QPushButton("« 5s")
-        self.forward_button = QPushButton("5s »")
+        self.play_button = QPushButton("▶ 再生")
+        self.stop_button = QPushButton("■ 停止")
+        self.back_button = QPushButton("« 5秒")
+        self.forward_button = QPushButton("5秒 »")
         for button in (self.play_button, self.stop_button, self.back_button, self.forward_button):
             button.setEnabled(False)
 
-        self.loop_a_button = QPushButton("SET A")
-        self.loop_b_button = QPushButton("SET B")
-        self.loop_check = QCheckBox("LOOP")
+        self.loop_a_button = QPushButton("A点設定")
+        self.loop_b_button = QPushButton("B点設定")
+        self.loop_check = QCheckBox("区間ループ")
         self.loop_check.setEnabled(False)
 
-        volume_label = QLabel("LEVEL")
+        volume_label = QLabel("音量")
         volume_label.setObjectName("controlLabel")
         self.volume_slider = QSlider(Qt.Horizontal)
         self.volume_slider.setRange(0, 100)
@@ -356,26 +358,26 @@ class MainWindow(QMainWindow):
 
         transform = QHBoxLayout()
         transform.setSpacing(8)
-        transform.addWidget(QLabel("TEMPO"))
+        transform.addWidget(QLabel("テンポ"))
 
         self.tempo_ratio = QDoubleSpinBox()
         self.tempo_ratio.setRange(0.50, 1.50)
         self.tempo_ratio.setSingleStep(0.05)
         self.tempo_ratio.setValue(1.00)
         self.tempo_ratio.setDecimals(2)
-        self.tempo_ratio.setSuffix(" x")
+        self.tempo_ratio.setSuffix(" 倍")
 
         transform.addWidget(self.tempo_ratio)
-        transform.addWidget(QLabel("KEY SHIFT"))
+        transform.addWidget(QLabel("キー変更"))
 
         self.key_shift = QSpinBox()
         self.key_shift.setRange(-12, 12)
         self.key_shift.setValue(0)
-        self.key_shift.setSuffix(" st")
+        self.key_shift.setSuffix(" 半音")
 
-        self.render_button = QPushButton("RENDER PRACTICE AUDIO")
+        self.render_button = QPushButton("練習音源を作成")
         self.render_button.setEnabled(False)
-        self.reset_audio_button = QPushButton("RESET AUDIO")
+        self.reset_audio_button = QPushButton("原曲に戻す")
         self.reset_audio_button.setEnabled(False)
 
         transform.addWidget(self.key_shift)
@@ -430,7 +432,7 @@ class MainWindow(QMainWindow):
             self,
             "音源を選択",
             str(Path.home()),
-            "Audio Files (*.mp3 *.wav *.flac *.m4a *.aac *.ogg);;All Files (*.*)",
+            "音声ファイル (*.mp3 *.wav *.flac *.m4a *.aac *.ogg);;すべてのファイル (*.*)",
         )
         if not filename:
             return
@@ -438,13 +440,13 @@ class MainWindow(QMainWindow):
 
     def _load_audio_path(self, path: Path) -> None:
         self.source_path = path
-        self.sources = {"ORIGINAL": path}
+        self.sources = {"原曲": path}
         self.analysis_result = None
         self.selected_root_index = None
 
         self.source_combo.blockSignals(True)
         self.source_combo.clear()
-        self.source_combo.addItem("ORIGINAL")
+        self.source_combo.addItem("原曲")
         self.source_combo.blockSignals(False)
 
         self.player.stop()
@@ -471,9 +473,9 @@ class MainWindow(QMainWindow):
         self.analyze_button.setEnabled(True)
 
         self._set_export_enabled(False)
-        self.system_status.setText("● AUDIO LINKED")
-        self.analysis_state_label.setText("ANALYSIS ENGINE: READY")
-        self.statusBar().showMessage(f"AUDIO LINKED // {path.name}")
+        self.system_status.setText("● 音源読込済")
+        self.analysis_state_label.setText("解析：実行可能")
+        self.statusBar().showMessage(f"音源を読み込みました｜{path.name}")
 
     def _start_analysis(self) -> None:
         if self.source_path is None:
@@ -481,12 +483,12 @@ class MainWindow(QMainWindow):
         if self.analysis_worker and self.analysis_worker.isRunning():
             return
 
-        mode = self.mode_combo.currentText()
+        mode = str(self.mode_combo.currentData())
         use_demucs = self.demucs_check.isChecked()
 
         self._set_busy(True)
         self.progress_bar.setValue(0)
-        self.analysis_state_label.setText("ANALYSIS ENGINE: RUNNING")
+        self.analysis_state_label.setText("解析：実行中")
 
         self.analysis_worker = AnalysisWorker(
             str(self.source_path),
@@ -506,23 +508,25 @@ class MainWindow(QMainWindow):
         self.analysis_result = result
         self.timeline.set_result(result)
         self._populate_root_table()
-        self.key_chip.setText(f"KEY {result.key_name}")
+        self.key_chip.setText(f"キー {self._display_key_name(result.key_name)}")
         self.tempo_chip.setText(f"BPM {result.tempo:.1f}")
-        self.root_chip.setText("ROOT --")
-        self.confidence_chip.setText("CONF --")
+        self.root_chip.setText("ルート --")
+        self.confidence_chip.setText("確信度 --")
 
         if result.bass_preview_path and Path(result.bass_preview_path).exists():
-            self.sources["BASS FOCUS"] = Path(result.bass_preview_path)
+            self.sources["ベース強調"] = Path(result.bass_preview_path)
         if result.isolated_bass_path and Path(result.isolated_bass_path).exists():
-            self.sources["ISOLATED BASS"] = Path(result.isolated_bass_path)
+            self.sources["分離ベース"] = Path(result.isolated_bass_path)
         self._refresh_source_combo()
 
         self._set_export_enabled(True)
         self._set_busy(False)
-        self.analysis_state_label.setText(f"ANALYSIS ENGINE: {result.mode.upper()}")
-        self.system_status.setText("● ROOT MAP READY")
+        self.analysis_state_label.setText(
+            f"解析：{self._analysis_mode_label(result.mode)} 完了"
+        )
+        self.system_status.setText("● 解析完了")
         self.statusBar().showMessage(
-            f"解析完了 // {len(result.roots)} beats // {result.key_name} // {result.tempo:.1f} BPM"
+            f"解析完了｜{len(result.roots)}拍｜{self._display_key_name(result.key_name)}｜{result.tempo:.1f} BPM"
         )
 
         if result.warnings:
@@ -534,8 +538,8 @@ class MainWindow(QMainWindow):
 
     def _analysis_failed(self, details: str) -> None:
         self._set_busy(False)
-        self.analysis_state_label.setText("ANALYSIS ENGINE: ERROR")
-        self.system_status.setText("● ANALYSIS ERROR")
+        self.analysis_state_label.setText("解析：エラー")
+        self.system_status.setText("● 解析エラー")
         self.progress_bar.setValue(0)
         QMessageBox.critical(
             self,
@@ -553,7 +557,7 @@ class MainWindow(QMainWindow):
             values = [
                 str(root.beat_index),
                 self._format_seconds(int(root.start * 1000)),
-                root.note_name,
+                self._display_note_name(root),
                 f"{root.confidence * 100:.0f}%",
                 f"{root.db:.1f}",
             ]
@@ -583,8 +587,8 @@ class MainWindow(QMainWindow):
         if combo_index >= 0:
             self.note_combo.setCurrentIndex(combo_index)
 
-        self.root_chip.setText(f"ROOT {root.note_name}")
-        self.confidence_chip.setText(f"CONF {root.confidence * 100:.0f}%")
+        self.root_chip.setText(f"ルート {self._display_note_name(root)}")
+        self.confidence_chip.setText(f"確信度 {root.confidence * 100:.0f}%")
         self.apply_note_button.setEnabled(True)
         self.mark_rest_button.setEnabled(True)
 
@@ -604,7 +608,9 @@ class MainWindow(QMainWindow):
         self._populate_root_table()
         self._select_root(self.selected_root_index)
         self.timeline.update()
-        self.statusBar().showMessage(f"ROOT UPDATED // BEAT {root.beat_index} = {root.note_name}")
+        self.statusBar().showMessage(
+            f"修正しました｜第{root.beat_index}拍 = {self._display_note_name(root)}"
+        )
 
     def _mark_root_rest(self) -> None:
         index = self.note_combo.findData(None)
@@ -650,13 +656,13 @@ class MainWindow(QMainWindow):
         self.loop_a_ms = self.player.position()
         if self.loop_b_ms and self.loop_b_ms <= self.loop_a_ms:
             self.loop_b_ms = 0
-        self.statusBar().showMessage(f"LOOP A // {self._format_seconds(self.loop_a_ms)}")
+        self.statusBar().showMessage(f"ループ開始点 A｜{self._format_seconds(self.loop_a_ms)}")
 
     def _set_loop_b(self) -> None:
         self.loop_b_ms = self.player.position()
         if self.loop_b_ms <= self.loop_a_ms:
             self.loop_a_ms = 0
-        self.statusBar().showMessage(f"LOOP B // {self._format_seconds(self.loop_b_ms)}")
+        self.statusBar().showMessage(f"ループ終了点 B｜{self._format_seconds(self.loop_b_ms)}")
 
     def _set_volume(self, value: int) -> None:
         self.audio_output.setVolume(value / 100)
@@ -665,7 +671,7 @@ class MainWindow(QMainWindow):
     def _duration_changed(self, duration_ms: int) -> None:
         self.position_slider.setRange(0, max(0, duration_ms))
         self.duration_label.setText(self._format_seconds(duration_ms))
-        self.duration_chip.setText(f"DURATION {self._format_seconds(duration_ms)}")
+        self.duration_chip.setText(f"長さ {self._format_seconds(duration_ms)}")
         self.timeline.set_duration(duration_ms)
 
     def _position_changed(self, position_ms: int) -> None:
@@ -696,15 +702,15 @@ class MainWindow(QMainWindow):
 
     def _playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
         if state == QMediaPlayer.PlayingState:
-            self.play_button.setText("Ⅱ PAUSE")
-            self.system_status.setText("● SIGNAL PLAYING")
+            self.play_button.setText("Ⅱ 一時停止")
+            self.system_status.setText("● 再生中")
         elif state == QMediaPlayer.PausedState:
-            self.play_button.setText("▶ PLAY")
-            self.system_status.setText("● SIGNAL PAUSED")
+            self.play_button.setText("▶ 再生")
+            self.system_status.setText("● 一時停止中")
         else:
-            self.play_button.setText("▶ PLAY")
+            self.play_button.setText("▶ 再生")
             if self.source_path is not None:
-                self.system_status.setText("● AUDIO LINKED")
+                self.system_status.setText("● 音源読込済")
 
     def _player_error(self, error: QMediaPlayer.Error, error_string: str) -> None:
         if error == QMediaPlayer.NoError:
@@ -735,19 +741,19 @@ class MainWindow(QMainWindow):
         self.transform_worker.start()
 
     def _transform_completed(self, path: str) -> None:
-        self.sources["PRACTICE RENDER"] = Path(path)
+        self.sources["練習音源"] = Path(path)
         self._refresh_source_combo()
-        self.source_combo.setCurrentText("PRACTICE RENDER")
+        self.source_combo.setCurrentText("練習音源")
         self._set_busy(False)
-        self.statusBar().showMessage("PRACTICE AUDIO READY")
+        self.statusBar().showMessage("練習音源を作成しました")
 
     def _transform_failed(self, details: str) -> None:
         self._set_busy(False)
         QMessageBox.critical(self, "音源変換エラー", self._friendly_error(details))
 
     def _reset_audio_source(self) -> None:
-        if "ORIGINAL" in self.sources:
-            self.source_combo.setCurrentText("ORIGINAL")
+        if "原曲" in self.sources:
+            self.source_combo.setCurrentText("原曲")
         self.tempo_ratio.setValue(1.0)
         self.key_shift.setValue(0)
 
@@ -762,7 +768,7 @@ class MainWindow(QMainWindow):
         )
         if path:
             export_pdf(self.analysis_result, path)
-            self.statusBar().showMessage(f"PDF EXPORTED // {path}")
+            self.statusBar().showMessage(f"PDFを保存しました｜{path}")
 
     def _export_csv(self) -> None:
         if self.analysis_result is None:
@@ -775,7 +781,7 @@ class MainWindow(QMainWindow):
         )
         if path:
             export_csv(self.analysis_result, path)
-            self.statusBar().showMessage(f"CSV EXPORTED // {path}")
+            self.statusBar().showMessage(f"CSVを保存しました｜{path}")
 
     def _export_musicxml(self) -> None:
         if self.analysis_result is None:
@@ -788,7 +794,7 @@ class MainWindow(QMainWindow):
         )
         if path:
             export_musicxml(self.analysis_result, path)
-            self.statusBar().showMessage(f"MUSICXML EXPORTED // {path}")
+            self.statusBar().showMessage(f"MusicXMLを保存しました｜{path}")
 
     def _save_session(self) -> None:
         if self.analysis_result is None:
@@ -797,18 +803,18 @@ class MainWindow(QMainWindow):
             self,
             "解析セッションを保存",
             str(Path.home() / f"{self.source_path.stem if self.source_path else 'bass'}.basscatcher.json"),
-            "Bass Catcher Session (*.basscatcher.json);;JSON (*.json)",
+            "Bass Catcher解析ファイル (*.basscatcher.json);;JSON (*.json)",
         )
         if path:
             export_session(self.analysis_result, path)
-            self.statusBar().showMessage(f"SESSION SAVED // {path}")
+            self.statusBar().showMessage(f"解析結果を保存しました｜{path}")
 
     def _load_session(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
             "解析セッションを開く",
             str(Path.home()),
-            "Bass Catcher Session (*.basscatcher.json *.json)",
+            "Bass Catcher解析ファイル (*.basscatcher.json *.json)",
         )
         if not path:
             return
@@ -836,15 +842,15 @@ class MainWindow(QMainWindow):
         self.analysis_result = result
         self.timeline.set_result(result)
         self._populate_root_table()
-        self.key_chip.setText(f"KEY {result.key_name}")
+        self.key_chip.setText(f"キー {self._display_key_name(result.key_name)}")
         self.tempo_chip.setText(f"BPM {result.tempo:.1f}")
         self._set_export_enabled(True)
         if result.bass_preview_path and Path(result.bass_preview_path).exists():
-            self.sources["BASS FOCUS"] = Path(result.bass_preview_path)
+            self.sources["ベース強調"] = Path(result.bass_preview_path)
         if result.isolated_bass_path and Path(result.isolated_bass_path).exists():
-            self.sources["ISOLATED BASS"] = Path(result.isolated_bass_path)
+            self.sources["分離ベース"] = Path(result.isolated_bass_path)
         self._refresh_source_combo()
-        self.analysis_state_label.setText("ANALYSIS ENGINE: SESSION LOADED")
+        self.analysis_state_label.setText("解析：保存データを読込済")
 
     def _set_export_enabled(self, enabled: bool) -> None:
         for button in (
@@ -863,13 +869,31 @@ class MainWindow(QMainWindow):
         self.mode_combo.setEnabled(not busy)
         self.demucs_check.setEnabled(not busy)
         if busy:
-            self.system_status.setText("● PROCESSING")
+            self.system_status.setText("● 処理中")
 
     def _update_optional_engine_labels(self) -> None:
-        basic = "READY" if is_basic_pitch_available() else "NOT INSTALLED"
-        demucs = "READY" if is_demucs_available() else "NOT INSTALLED"
-        self.engine_info.setText(f"BASIC PITCH: {basic}\nDEMUCS: {demucs}")
+        basic = "利用可" if is_basic_pitch_available() else "未導入"
+        demucs = "利用可" if is_demucs_available() else "未導入"
+        self.engine_info.setText(f"Basic Pitch：{basic}\nDemucs：{demucs}")
         self.demucs_check.setEnabled(is_demucs_available())
+
+    @staticmethod
+    def _display_note_name(root: RootEvent) -> str:
+        return "休符" if root.midi is None else root.note_name
+
+    @staticmethod
+    def _display_key_name(key_name: str) -> str:
+        return "不明" if key_name == "Unknown" else key_name
+
+    @staticmethod
+    def _analysis_mode_label(mode: str) -> str:
+        labels = {
+            "Precision DSP": "高精度解析",
+            "AI Hybrid": "AI併用解析",
+            "Fast": "高速解析",
+            "Loaded session": "保存データ",
+        }
+        return labels.get(mode, mode)
 
     @staticmethod
     def _divider() -> QFrame:
