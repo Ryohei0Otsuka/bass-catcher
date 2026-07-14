@@ -74,13 +74,6 @@ class MainWindow(QMainWindow):
         self._active_practice_semitones = 0
         self._last_notified_root_index: int | None = None
         self._detected_note_effects: dict[int, QSoundEffect] = {}
-        self._next_detected_cue_index = 0
-        self._last_cue_poll_position_ms = 0
-
-        self._detected_cue_timer = QTimer(self)
-        self._detected_cue_timer.setTimerType(Qt.PreciseTimer)
-        self._detected_cue_timer.setInterval(12)
-        self._detected_cue_timer.timeout.connect(self._poll_detected_note_cue)
 
         self.audio_output = QAudioOutput(self)
         self.audio_output.setVolume(0.82)
@@ -372,7 +365,7 @@ class MainWindow(QMainWindow):
         self.detected_note_sound_check = QCheckBox("検出音をピアノで鳴らす")
         self.detected_note_sound_check.setChecked(False)
         self.detected_note_sound_check.setToolTip(
-            "再生中、ベースの実際の発音タイミングに合わせて検出音を通知します"
+            "再生中、拍ごとの検出ルート音を短いピアノ音で通知します"
         )
 
         controls.addWidget(self.detected_note_sound_check)
@@ -399,7 +392,7 @@ class MainWindow(QMainWindow):
         self.detected_note_lead_ms.setSingleStep(5)
         self.detected_note_lead_ms.setSuffix(" ms")
         self.detected_note_lead_ms.setToolTip(
-            "通知音が遅く聞こえる場合に増やします。端末ごとの再生遅延を補正します"
+            "ピアノ通知が遅く聞こえる場合に増やします"
         )
 
         controls.addWidget(cue_lead_label)
@@ -510,8 +503,6 @@ class MainWindow(QMainWindow):
         self._active_practice_tempo = 1.0
         self._active_practice_semitones = 0
         self._last_notified_root_index = None
-        self._next_detected_cue_index = 0
-        self._last_cue_poll_position_ms = 0
 
         self.source_combo.blockSignals(True)
         self.source_combo.clear()
@@ -583,7 +574,6 @@ class MainWindow(QMainWindow):
 
     def _analysis_completed(self, result: AnalysisResult) -> None:
         self.analysis_result = result
-        self._sync_detected_cue_cursor()
         self.timeline.set_result(result)
         self._populate_root_table()
         self.key_chip.setText(f"キー {self._display_key_name(result.key_name)}")
@@ -723,7 +713,6 @@ class MainWindow(QMainWindow):
 
         position = self.player.position()
         self._last_notified_root_index = None
-        self._sync_detected_cue_cursor(position)
         was_playing = self.player.playbackState() == QMediaPlayer.PlayingState
         self.player.stop()
         self.player.setSource(QUrl.fromLocalFile(str(path)))
@@ -748,12 +737,26 @@ class MainWindow(QMainWindow):
     def _toggle_playback(self) -> None:
         if self.player.playbackState() == QMediaPlayer.PlayingState:
             self.player.pause()
-        else:
-            self.player.play()
+            return
+
+        if self.source_path is None:
+            return
+
+        self.audio_output.setMuted(False)
+
+        current_label = self.source_combo.currentText() or "原曲"
+        current_path = self.sources.get(current_label, self.source_path)
+        expected_url = QUrl.fromLocalFile(str(current_path))
+
+        if self.player.source().isEmpty() or self.player.source() != expected_url:
+            self.player.setSource(expected_url)
+            QTimer.singleShot(180, self.player.play)
+            return
+
+        self.player.play()
 
     def _seek_to_position(self, position_ms: int) -> None:
         self._last_notified_root_index = None
-        self._sync_detected_cue_cursor(position_ms)
         self.player.setPosition(position_ms)
 
     def _seek_relative(self, delta_ms: int) -> None:
@@ -879,86 +882,12 @@ class MainWindow(QMainWindow):
 
     def _detected_note_sound_toggled(self, enabled: bool) -> None:
         self._last_notified_root_index = None
-        self._sync_detected_cue_cursor()
-
         if not enabled:
-            self._detected_cue_timer.stop()
             for effect in self._detected_note_effects.values():
                 effect.stop()
             self.statusBar().showMessage("検出音のピアノ通知：OFF")
             return
-
-        if self.player.playbackState() == QMediaPlayer.PlayingState:
-            self._detected_cue_timer.start()
-        self.statusBar().showMessage("検出音のピアノ通知：ON｜実音タイミング追従")
-
-    def _root_cue_time(self, index: int) -> float | None:
-        if self.analysis_result is None:
-            return None
-        if not 0 <= index < len(self.analysis_result.roots):
-            return None
-
-        root = self.analysis_result.roots[index]
-        cue_time = getattr(root, "cue_time", None)
-        if cue_time is None:
-            return None
-        return max(0.0, float(cue_time))
-
-    def _sync_detected_cue_cursor(self, position_ms: int | None = None) -> None:
-        if self.analysis_result is None:
-            self._next_detected_cue_index = 0
-            self._last_cue_poll_position_ms = 0
-            return
-
-        if position_ms is None:
-            position_ms = self.player.position()
-
-        rate = max(0.5, float(self.player.playbackRate()))
-        lead_seconds = (self.detected_note_lead_ms.value() / 1000.0) * rate
-        threshold = max(0.0, position_ms / 1000.0 + lead_seconds - 0.035)
-
-        index = 0
-        while index < len(self.analysis_result.roots):
-            cue_time = self._root_cue_time(index)
-            if cue_time is not None and cue_time >= threshold:
-                break
-            index += 1
-
-        self._next_detected_cue_index = index
-        self._last_cue_poll_position_ms = int(position_ms)
-
-    def _poll_detected_note_cue(self) -> None:
-        if not self.detected_note_sound_check.isChecked():
-            return
-        if self.player.playbackState() != QMediaPlayer.PlayingState:
-            return
-        if self.analysis_result is None:
-            return
-
-        position_ms = self.player.position()
-        if position_ms + 120 < self._last_cue_poll_position_ms:
-            self._sync_detected_cue_cursor(position_ms)
-
-        rate = max(0.5, float(self.player.playbackRate()))
-        lead_seconds = (self.detected_note_lead_ms.value() / 1000.0) * rate
-        trigger_time = position_ms / 1000.0 + lead_seconds
-
-        while self._next_detected_cue_index < len(self.analysis_result.roots):
-            cue_time = self._root_cue_time(self._next_detected_cue_index)
-
-            if cue_time is None:
-                self._next_detected_cue_index += 1
-                continue
-            if cue_time > trigger_time:
-                break
-
-            self._play_detected_note(
-                self._next_detected_cue_index,
-                force=True,
-            )
-            self._next_detected_cue_index += 1
-
-        self._last_cue_poll_position_ms = position_ms
+        self.statusBar().showMessage("検出音のピアノ通知：ON｜拍ごとに通知")
 
     def _duration_changed(self, duration_ms: int) -> None:
         self.position_slider.setRange(0, max(0, duration_ms))
@@ -980,10 +909,18 @@ class MainWindow(QMainWindow):
             self.player.setPosition(self.loop_a_ms)
 
         if self.analysis_result is not None:
-            index = self._root_index_for_position(position_ms / 1000)
-            if index is not None:
-                if index != self.selected_root_index:
-                    self._select_root(index)
+            visual_index = self._root_index_for_position(position_ms / 1000)
+            if visual_index is not None and visual_index != self.selected_root_index:
+                self._select_root(visual_index)
+
+            if (
+                self.player.playbackState() == QMediaPlayer.PlayingState
+                and self.detected_note_sound_check.isChecked()
+            ):
+                cue_ms = position_ms + int(self.detected_note_lead_ms.value())
+                cue_index = self._root_index_for_position(cue_ms / 1000)
+                if cue_index is not None:
+                    self._play_detected_note(cue_index)
 
     def _root_index_for_position(self, seconds: float) -> int | None:
         if self.analysis_result is None:
@@ -997,18 +934,12 @@ class MainWindow(QMainWindow):
         if state == QMediaPlayer.PlayingState:
             self.play_button.setText("Ⅱ 一時停止")
             self.system_status.setText("● 再生中")
-            self._sync_detected_cue_cursor()
-            if self.detected_note_sound_check.isChecked():
-                self._detected_cue_timer.start()
         elif state == QMediaPlayer.PausedState:
-            self._detected_cue_timer.stop()
             self.play_button.setText("▶ 再生")
             self.system_status.setText("● 一時停止中")
         else:
-            self._detected_cue_timer.stop()
             self.play_button.setText("▶ 再生")
             self._last_notified_root_index = None
-            self._sync_detected_cue_cursor(0)
             if self.source_path is not None:
                 self.system_status.setText("● 音源読込済")
 
@@ -1181,7 +1112,6 @@ class MainWindow(QMainWindow):
                 "解析結果は開けますが、元音源の再生はできません。",
             )
             self.analysis_result = result
-            self._sync_detected_cue_cursor()
             self.timeline.set_result(result)
             self._populate_root_table()
             self._set_export_enabled(True)
@@ -1189,7 +1119,6 @@ class MainWindow(QMainWindow):
 
         self._load_audio_path(source)
         self.analysis_result = result
-        self._sync_detected_cue_cursor()
         self.timeline.set_result(result)
         self._populate_root_table()
         self.key_chip.setText(f"キー {self._display_key_name(result.key_name)}")

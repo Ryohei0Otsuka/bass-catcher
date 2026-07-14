@@ -39,7 +39,6 @@ class RootEvent:
     midi: int | None
     confidence: float
     db: float
-    cue_time: float | None = None
     source: str = "DSP"
     manually_edited: bool = False
 
@@ -59,7 +58,6 @@ class RootEvent:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "RootEvent":
-        cue_time = payload.get("cue_time", payload.get("start"))
         return cls(
             beat_index=int(payload["beat_index"]),
             start=float(payload["start"]),
@@ -67,7 +65,6 @@ class RootEvent:
             midi=None if payload.get("midi") is None else int(payload["midi"]),
             confidence=float(payload.get("confidence", 0.0)),
             db=float(payload.get("db", -80.0)),
-            cue_time=None if cue_time is None else float(cue_time),
             source=str(payload.get("source", "DSP")),
             manually_edited=bool(payload.get("manually_edited", False)),
         )
