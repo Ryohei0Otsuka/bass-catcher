@@ -1,0 +1,1 @@
+"""Bass Catcher custom widgets."""

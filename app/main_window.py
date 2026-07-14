@@ -1,0 +1,1149 @@
+from __future__ import annotations
+
+import tempfile
+import traceback
+from pathlib import Path
+
+from PySide6.QtCore import QTimer, Qt, QUrl
+from PySide6.QtGui import QColor, QIcon
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSlider,
+    QSpinBox,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from app.audio_analysis import is_basic_pitch_available, is_demucs_available
+from app.exporters import (
+    export_csv,
+    export_musicxml,
+    export_pdf,
+    export_session,
+    load_session,
+)
+from app.models import AnalysisResult, RootEvent, midi_to_note_name
+from app.widgets.cyber_panel import CyberPanel
+from app.widgets.piano_keyboard import PianoKeyboard
+from app.widgets.pitch_timeline import PitchTimeline
+from app.workers import AnalysisWorker, TransformWorker
+
+
+class MainWindow(QMainWindow):
+    def __init__(self) -> None:
+        super().__init__()
+
+        self.setWindowTitle("Bass Catcher // Root Signal Tracker")
+        self.resize(1480, 900)
+        self.setMinimumSize(1120, 700)
+
+        self.source_path: Path | None = None
+        self.analysis_result: AnalysisResult | None = None
+        self.sources: dict[str, Path] = {}
+        self.loop_a_ms = 0
+        self.loop_b_ms = 0
+        self.selected_root_index: int | None = None
+        self.analysis_worker: AnalysisWorker | None = None
+        self.transform_worker: TransformWorker | None = None
+        self._pending_restore_position = 0
+
+        self.audio_output = QAudioOutput(self)
+        self.audio_output.setVolume(0.82)
+
+        self.player = QMediaPlayer(self)
+        self.player.setAudioOutput(self.audio_output)
+
+        self._build_ui()
+        self._connect_signals()
+        self._apply_styles()
+        self._update_optional_engine_labels()
+
+        self.statusBar().showMessage("SYSTEM READY // IMPORT AUDIO")
+
+    def _build_ui(self) -> None:
+        central = QWidget(self)
+        central.setObjectName("root")
+        self.setCentralWidget(central)
+
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(20, 16, 20, 16)
+        root_layout.setSpacing(11)
+
+        root_layout.addLayout(self._create_header())
+        root_layout.addWidget(self._create_file_strip())
+
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setObjectName("mainSplitter")
+        splitter.addWidget(self._create_timeline_panel())
+        splitter.addWidget(self._create_analysis_panel())
+        splitter.setSizes([980, 380])
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        root_layout.addWidget(splitter, 1)
+
+        root_layout.addWidget(self._create_transport_panel())
+
+    def _create_header(self) -> QHBoxLayout:
+        header = QHBoxLayout()
+        header.setSpacing(14)
+
+        title_layout = QVBoxLayout()
+        title_layout.setSpacing(0)
+
+        title = QLabel("BASS // CATCHER")
+        title.setObjectName("appTitle")
+        self._add_neon_shadow(title, "#00F6FF", 24)
+
+        subtitle = QLabel("LOW-FREQUENCY ROOT SIGNAL TRACKER")
+        subtitle.setObjectName("appSubtitle")
+
+        title_layout.addWidget(title)
+        title_layout.addWidget(subtitle)
+
+        self.system_status = QLabel("● SYSTEM READY")
+        self.system_status.setObjectName("systemStatus")
+
+        self.load_session_button = QPushButton("LOAD SESSION")
+        self.load_session_button.setObjectName("headerButton")
+
+        self.import_button = QPushButton("IMPORT AUDIO")
+        self.import_button.setObjectName("primaryButton")
+
+        header.addLayout(title_layout)
+        header.addStretch(1)
+        header.addWidget(self.system_status)
+        header.addWidget(self.load_session_button)
+        header.addWidget(self.import_button)
+        return header
+
+    def _create_file_strip(self) -> CyberPanel:
+        panel = CyberPanel(accent="#FF2BD6")
+        panel.setFixedHeight(66)
+
+        layout = QHBoxLayout(panel)
+        layout.setContentsMargins(17, 10, 17, 10)
+        layout.setSpacing(12)
+
+        label = QLabel("INPUT SIGNAL")
+        label.setObjectName("sectionLabel")
+
+        self.file_label = QLabel("NO AUDIO FILE LINKED")
+        self.file_label.setObjectName("fileLabel")
+        self.file_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        self.source_combo = QComboBox()
+        self.source_combo.setMinimumWidth(150)
+        self.source_combo.addItem("ORIGINAL")
+
+        self.duration_chip = QLabel("DURATION --:--")
+        self.duration_chip.setObjectName("dataChip")
+
+        layout.addWidget(label)
+        layout.addWidget(self._divider())
+        layout.addWidget(self.file_label, 1)
+        layout.addWidget(QLabel("MONITOR"))
+        layout.addWidget(self.source_combo)
+        layout.addWidget(self.duration_chip)
+        return panel
+
+    def _create_timeline_panel(self) -> CyberPanel:
+        panel = CyberPanel(accent="#00F6FF")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(7)
+
+        header = QHBoxLayout()
+        axis = QLabel("PITCH AXIS // B0 — C4")
+        axis.setObjectName("sectionLabel")
+
+        self.analysis_state_label = QLabel("ANALYSIS ENGINE: STANDBY")
+        self.analysis_state_label.setObjectName("analysisState")
+
+        header.addWidget(axis)
+        header.addStretch(1)
+        header.addWidget(self.analysis_state_label)
+
+        canvas = QHBoxLayout()
+        canvas.setSpacing(0)
+        self.keyboard = PianoKeyboard()
+        self.timeline = PitchTimeline()
+        canvas.addWidget(self.keyboard)
+        canvas.addWidget(self.timeline, 1)
+
+        layout.addLayout(header)
+        layout.addLayout(canvas, 1)
+        return panel
+
+    def _create_analysis_panel(self) -> CyberPanel:
+        panel = CyberPanel(accent="#FF2BD6")
+        panel.setMinimumWidth(350)
+        panel.setMaximumWidth(470)
+
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(13, 12, 13, 12)
+        layout.setSpacing(10)
+
+        title = QLabel("ANALYSIS / CONTROL")
+        title.setObjectName("sectionLabel")
+
+        mode_layout = QGridLayout()
+        mode_layout.setHorizontalSpacing(8)
+        mode_layout.setVerticalSpacing(8)
+
+        mode_layout.addWidget(QLabel("MODE"), 0, 0)
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["Precision DSP", "AI Hybrid", "Fast"])
+        mode_layout.addWidget(self.mode_combo, 0, 1)
+
+        self.demucs_check = QCheckBox("DEMUCS BASS SEPARATION")
+        mode_layout.addWidget(self.demucs_check, 1, 0, 1, 2)
+
+        self.engine_info = QLabel("")
+        self.engine_info.setObjectName("mutedLabel")
+        self.engine_info.setWordWrap(True)
+        mode_layout.addWidget(self.engine_info, 2, 0, 1, 2)
+
+        self.analyze_button = QPushButton("RUN ROOT ANALYSIS")
+        self.analyze_button.setObjectName("actionButton")
+        self.analyze_button.setEnabled(False)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+
+        stats = QGridLayout()
+        stats.setSpacing(7)
+        self.root_chip = QLabel("ROOT --")
+        self.root_chip.setObjectName("dataChip")
+        self.key_chip = QLabel("KEY --")
+        self.key_chip.setObjectName("dataChip")
+        self.tempo_chip = QLabel("BPM ---")
+        self.tempo_chip.setObjectName("dataChip")
+        self.confidence_chip = QLabel("CONF --")
+        self.confidence_chip.setObjectName("dataChip")
+        stats.addWidget(self.root_chip, 0, 0)
+        stats.addWidget(self.key_chip, 0, 1)
+        stats.addWidget(self.tempo_chip, 1, 0)
+        stats.addWidget(self.confidence_chip, 1, 1)
+
+        edit_group = QGroupBox("ROOT CORRECTION")
+        edit_layout = QGridLayout(edit_group)
+
+        self.note_combo = QComboBox()
+        self.note_combo.addItem("REST", None)
+        for midi in range(23, 61):
+            self.note_combo.addItem(midi_to_note_name(midi), midi)
+
+        self.apply_note_button = QPushButton("APPLY")
+        self.apply_note_button.setEnabled(False)
+        self.mark_rest_button = QPushButton("REST")
+        self.mark_rest_button.setEnabled(False)
+
+        edit_layout.addWidget(self.note_combo, 0, 0, 1, 2)
+        edit_layout.addWidget(self.apply_note_button, 1, 0)
+        edit_layout.addWidget(self.mark_rest_button, 1, 1)
+
+        self.root_table = QTableWidget(0, 5)
+        self.root_table.setHorizontalHeaderLabels(["BEAT", "TIME", "ROOT", "CONF", "dB"])
+        self.root_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.root_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.root_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.root_table.verticalHeader().setVisible(False)
+        self.root_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.root_table.horizontalHeader().setStretchLastSection(True)
+
+        export_layout = QGridLayout()
+        self.pdf_button = QPushButton("PDF")
+        self.csv_button = QPushButton("CSV")
+        self.musicxml_button = QPushButton("MUSICXML")
+        self.save_session_button = QPushButton("SAVE SESSION")
+        for button in (
+            self.pdf_button,
+            self.csv_button,
+            self.musicxml_button,
+            self.save_session_button,
+        ):
+            button.setEnabled(False)
+        export_layout.addWidget(self.pdf_button, 0, 0)
+        export_layout.addWidget(self.csv_button, 0, 1)
+        export_layout.addWidget(self.musicxml_button, 1, 0)
+        export_layout.addWidget(self.save_session_button, 1, 1)
+
+        layout.addWidget(title)
+        layout.addLayout(mode_layout)
+        layout.addWidget(self.analyze_button)
+        layout.addWidget(self.progress_bar)
+        layout.addLayout(stats)
+        layout.addWidget(edit_group)
+        layout.addWidget(self.root_table, 1)
+        layout.addLayout(export_layout)
+        return panel
+
+    def _create_transport_panel(self) -> CyberPanel:
+        panel = CyberPanel(accent="#00F6FF")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 12, 16, 13)
+        layout.setSpacing(9)
+
+        seek = QHBoxLayout()
+        self.current_time_label = QLabel("00:00")
+        self.current_time_label.setObjectName("timeLabel")
+        self.position_slider = QSlider(Qt.Horizontal)
+        self.position_slider.setRange(0, 0)
+        self.position_slider.setEnabled(False)
+        self.duration_label = QLabel("00:00")
+        self.duration_label.setObjectName("timeLabel")
+        seek.addWidget(self.current_time_label)
+        seek.addWidget(self.position_slider, 1)
+        seek.addWidget(self.duration_label)
+
+        controls = QHBoxLayout()
+        controls.setSpacing(8)
+
+        self.play_button = QPushButton("▶ PLAY")
+        self.stop_button = QPushButton("■ STOP")
+        self.back_button = QPushButton("« 5s")
+        self.forward_button = QPushButton("5s »")
+        for button in (self.play_button, self.stop_button, self.back_button, self.forward_button):
+            button.setEnabled(False)
+
+        self.loop_a_button = QPushButton("SET A")
+        self.loop_b_button = QPushButton("SET B")
+        self.loop_check = QCheckBox("LOOP")
+        self.loop_check.setEnabled(False)
+
+        volume_label = QLabel("LEVEL")
+        volume_label.setObjectName("controlLabel")
+        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(82)
+        self.volume_slider.setFixedWidth(130)
+        self.volume_value = QLabel("082%")
+        self.volume_value.setObjectName("controlValue")
+
+        controls.addWidget(self.play_button)
+        controls.addWidget(self.stop_button)
+        controls.addWidget(self.back_button)
+        controls.addWidget(self.forward_button)
+        controls.addSpacing(8)
+        controls.addWidget(self.loop_a_button)
+        controls.addWidget(self.loop_b_button)
+        controls.addWidget(self.loop_check)
+        controls.addStretch(1)
+        controls.addWidget(volume_label)
+        controls.addWidget(self.volume_slider)
+        controls.addWidget(self.volume_value)
+
+        transform = QHBoxLayout()
+        transform.setSpacing(8)
+        transform.addWidget(QLabel("TEMPO"))
+
+        self.tempo_ratio = QDoubleSpinBox()
+        self.tempo_ratio.setRange(0.50, 1.50)
+        self.tempo_ratio.setSingleStep(0.05)
+        self.tempo_ratio.setValue(1.00)
+        self.tempo_ratio.setDecimals(2)
+        self.tempo_ratio.setSuffix(" x")
+
+        transform.addWidget(self.tempo_ratio)
+        transform.addWidget(QLabel("KEY SHIFT"))
+
+        self.key_shift = QSpinBox()
+        self.key_shift.setRange(-12, 12)
+        self.key_shift.setValue(0)
+        self.key_shift.setSuffix(" st")
+
+        self.render_button = QPushButton("RENDER PRACTICE AUDIO")
+        self.render_button.setEnabled(False)
+        self.reset_audio_button = QPushButton("RESET AUDIO")
+        self.reset_audio_button.setEnabled(False)
+
+        transform.addWidget(self.key_shift)
+        transform.addWidget(self.render_button)
+        transform.addWidget(self.reset_audio_button)
+        transform.addStretch(1)
+
+        layout.addLayout(seek)
+        layout.addLayout(controls)
+        layout.addLayout(transform)
+        return panel
+
+    def _connect_signals(self) -> None:
+        self.import_button.clicked.connect(self._open_audio)
+        self.load_session_button.clicked.connect(self._load_session)
+        self.source_combo.currentTextChanged.connect(self._change_monitor_source)
+
+        self.analyze_button.clicked.connect(self._start_analysis)
+
+        self.play_button.clicked.connect(self._toggle_playback)
+        self.stop_button.clicked.connect(self.player.stop)
+        self.back_button.clicked.connect(lambda: self._seek_relative(-5000))
+        self.forward_button.clicked.connect(lambda: self._seek_relative(5000))
+        self.loop_a_button.clicked.connect(self._set_loop_a)
+        self.loop_b_button.clicked.connect(self._set_loop_b)
+
+        self.volume_slider.valueChanged.connect(self._set_volume)
+        self.position_slider.sliderMoved.connect(self.player.setPosition)
+
+        self.player.durationChanged.connect(self._duration_changed)
+        self.player.positionChanged.connect(self._position_changed)
+        self.player.playbackStateChanged.connect(self._playback_state_changed)
+        self.player.errorOccurred.connect(self._player_error)
+
+        self.timeline.note_selected.connect(self._select_root)
+        self.timeline.seek_requested.connect(self.player.setPosition)
+
+        self.root_table.itemSelectionChanged.connect(self._table_selection_changed)
+        self.apply_note_button.clicked.connect(self._apply_root_edit)
+        self.mark_rest_button.clicked.connect(self._mark_root_rest)
+
+        self.pdf_button.clicked.connect(self._export_pdf)
+        self.csv_button.clicked.connect(self._export_csv)
+        self.musicxml_button.clicked.connect(self._export_musicxml)
+        self.save_session_button.clicked.connect(self._save_session)
+
+        self.render_button.clicked.connect(self._start_transform)
+        self.reset_audio_button.clicked.connect(self._reset_audio_source)
+
+    def _open_audio(self) -> None:
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "音源を選択",
+            str(Path.home()),
+            "Audio Files (*.mp3 *.wav *.flac *.m4a *.aac *.ogg);;All Files (*.*)",
+        )
+        if not filename:
+            return
+        self._load_audio_path(Path(filename))
+
+    def _load_audio_path(self, path: Path) -> None:
+        self.source_path = path
+        self.sources = {"ORIGINAL": path}
+        self.analysis_result = None
+        self.selected_root_index = None
+
+        self.source_combo.blockSignals(True)
+        self.source_combo.clear()
+        self.source_combo.addItem("ORIGINAL")
+        self.source_combo.blockSignals(False)
+
+        self.player.stop()
+        self.player.setSource(QUrl.fromLocalFile(str(path)))
+
+        self.file_label.setText(path.name.upper())
+        self.file_label.setToolTip(str(path))
+        self.timeline.set_result(None)
+        self.root_table.setRowCount(0)
+
+        for button in (
+            self.play_button,
+            self.stop_button,
+            self.back_button,
+            self.forward_button,
+            self.loop_a_button,
+            self.loop_b_button,
+            self.render_button,
+            self.reset_audio_button,
+        ):
+            button.setEnabled(True)
+        self.loop_check.setEnabled(True)
+        self.position_slider.setEnabled(True)
+        self.analyze_button.setEnabled(True)
+
+        self._set_export_enabled(False)
+        self.system_status.setText("● AUDIO LINKED")
+        self.analysis_state_label.setText("ANALYSIS ENGINE: READY")
+        self.statusBar().showMessage(f"AUDIO LINKED // {path.name}")
+
+    def _start_analysis(self) -> None:
+        if self.source_path is None:
+            return
+        if self.analysis_worker and self.analysis_worker.isRunning():
+            return
+
+        mode = self.mode_combo.currentText()
+        use_demucs = self.demucs_check.isChecked()
+
+        self._set_busy(True)
+        self.progress_bar.setValue(0)
+        self.analysis_state_label.setText("ANALYSIS ENGINE: RUNNING")
+
+        self.analysis_worker = AnalysisWorker(
+            str(self.source_path),
+            mode,
+            use_demucs,
+        )
+        self.analysis_worker.progress.connect(self._analysis_progress)
+        self.analysis_worker.completed.connect(self._analysis_completed)
+        self.analysis_worker.failed.connect(self._analysis_failed)
+        self.analysis_worker.start()
+
+    def _analysis_progress(self, value: int, message: str) -> None:
+        self.progress_bar.setValue(value)
+        self.statusBar().showMessage(message)
+
+    def _analysis_completed(self, result: AnalysisResult) -> None:
+        self.analysis_result = result
+        self.timeline.set_result(result)
+        self._populate_root_table()
+        self.key_chip.setText(f"KEY {result.key_name}")
+        self.tempo_chip.setText(f"BPM {result.tempo:.1f}")
+        self.root_chip.setText("ROOT --")
+        self.confidence_chip.setText("CONF --")
+
+        if result.bass_preview_path and Path(result.bass_preview_path).exists():
+            self.sources["BASS FOCUS"] = Path(result.bass_preview_path)
+        if result.isolated_bass_path and Path(result.isolated_bass_path).exists():
+            self.sources["ISOLATED BASS"] = Path(result.isolated_bass_path)
+        self._refresh_source_combo()
+
+        self._set_export_enabled(True)
+        self._set_busy(False)
+        self.analysis_state_label.setText(f"ANALYSIS ENGINE: {result.mode.upper()}")
+        self.system_status.setText("● ROOT MAP READY")
+        self.statusBar().showMessage(
+            f"解析完了 // {len(result.roots)} beats // {result.key_name} // {result.tempo:.1f} BPM"
+        )
+
+        if result.warnings:
+            QMessageBox.warning(
+                self,
+                "解析は完了しました",
+                "\n".join(result.warnings),
+            )
+
+    def _analysis_failed(self, details: str) -> None:
+        self._set_busy(False)
+        self.analysis_state_label.setText("ANALYSIS ENGINE: ERROR")
+        self.system_status.setText("● ANALYSIS ERROR")
+        self.progress_bar.setValue(0)
+        QMessageBox.critical(
+            self,
+            "解析エラー",
+            self._friendly_error(details),
+        )
+
+    def _populate_root_table(self) -> None:
+        if self.analysis_result is None:
+            self.root_table.setRowCount(0)
+            return
+
+        self.root_table.setRowCount(len(self.analysis_result.roots))
+        for row, root in enumerate(self.analysis_result.roots):
+            values = [
+                str(root.beat_index),
+                self._format_seconds(int(root.start * 1000)),
+                root.note_name,
+                f"{root.confidence * 100:.0f}%",
+                f"{root.db:.1f}",
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setTextAlignment(Qt.AlignCenter)
+                if root.manually_edited:
+                    item.setForeground(QColor("#EFFF75"))
+                elif root.confidence < 0.42:
+                    item.setForeground(QColor("#FF68DD"))
+                self.root_table.setItem(row, column, item)
+
+    def _select_root(self, index: int) -> None:
+        if self.analysis_result is None or not 0 <= index < len(self.analysis_result.roots):
+            return
+
+        self.selected_root_index = index
+        root = self.analysis_result.roots[index]
+        self.timeline.set_selected_index(index)
+
+        self.root_table.blockSignals(True)
+        self.root_table.selectRow(index)
+        self.root_table.scrollToItem(self.root_table.item(index, 0))
+        self.root_table.blockSignals(False)
+
+        combo_index = self.note_combo.findData(root.midi)
+        if combo_index >= 0:
+            self.note_combo.setCurrentIndex(combo_index)
+
+        self.root_chip.setText(f"ROOT {root.note_name}")
+        self.confidence_chip.setText(f"CONF {root.confidence * 100:.0f}%")
+        self.apply_note_button.setEnabled(True)
+        self.mark_rest_button.setEnabled(True)
+
+    def _table_selection_changed(self) -> None:
+        rows = self.root_table.selectionModel().selectedRows()
+        if rows:
+            self._select_root(rows[0].row())
+
+    def _apply_root_edit(self) -> None:
+        if self.analysis_result is None or self.selected_root_index is None:
+            return
+        root = self.analysis_result.roots[self.selected_root_index]
+        root.midi = self.note_combo.currentData()
+        root.manually_edited = True
+        root.confidence = 1.0
+        root.source = "MANUAL"
+        self._populate_root_table()
+        self._select_root(self.selected_root_index)
+        self.timeline.update()
+        self.statusBar().showMessage(f"ROOT UPDATED // BEAT {root.beat_index} = {root.note_name}")
+
+    def _mark_root_rest(self) -> None:
+        index = self.note_combo.findData(None)
+        self.note_combo.setCurrentIndex(index)
+        self._apply_root_edit()
+
+    def _change_monitor_source(self, label: str) -> None:
+        path = self.sources.get(label)
+        if path is None or not path.exists():
+            return
+        position = self.player.position()
+        was_playing = self.player.playbackState() == QMediaPlayer.PlayingState
+        self.player.stop()
+        self.player.setSource(QUrl.fromLocalFile(str(path)))
+        self._pending_restore_position = position
+        QTimer.singleShot(250, self._restore_source_position)
+        if was_playing:
+            QTimer.singleShot(350, self.player.play)
+
+    def _restore_source_position(self) -> None:
+        self.player.setPosition(self._pending_restore_position)
+
+    def _refresh_source_combo(self) -> None:
+        current = self.source_combo.currentText()
+        self.source_combo.blockSignals(True)
+        self.source_combo.clear()
+        self.source_combo.addItems(self.sources.keys())
+        index = self.source_combo.findText(current)
+        self.source_combo.setCurrentIndex(max(0, index))
+        self.source_combo.blockSignals(False)
+
+    def _toggle_playback(self) -> None:
+        if self.player.playbackState() == QMediaPlayer.PlayingState:
+            self.player.pause()
+        else:
+            self.player.play()
+
+    def _seek_relative(self, delta_ms: int) -> None:
+        target = max(0, min(self.player.duration(), self.player.position() + delta_ms))
+        self.player.setPosition(target)
+
+    def _set_loop_a(self) -> None:
+        self.loop_a_ms = self.player.position()
+        if self.loop_b_ms and self.loop_b_ms <= self.loop_a_ms:
+            self.loop_b_ms = 0
+        self.statusBar().showMessage(f"LOOP A // {self._format_seconds(self.loop_a_ms)}")
+
+    def _set_loop_b(self) -> None:
+        self.loop_b_ms = self.player.position()
+        if self.loop_b_ms <= self.loop_a_ms:
+            self.loop_a_ms = 0
+        self.statusBar().showMessage(f"LOOP B // {self._format_seconds(self.loop_b_ms)}")
+
+    def _set_volume(self, value: int) -> None:
+        self.audio_output.setVolume(value / 100)
+        self.volume_value.setText(f"{value:03d}%")
+
+    def _duration_changed(self, duration_ms: int) -> None:
+        self.position_slider.setRange(0, max(0, duration_ms))
+        self.duration_label.setText(self._format_seconds(duration_ms))
+        self.duration_chip.setText(f"DURATION {self._format_seconds(duration_ms)}")
+        self.timeline.set_duration(duration_ms)
+
+    def _position_changed(self, position_ms: int) -> None:
+        if not self.position_slider.isSliderDown():
+            self.position_slider.setValue(position_ms)
+        self.current_time_label.setText(self._format_seconds(position_ms))
+        self.timeline.set_position(position_ms)
+
+        if (
+            self.loop_check.isChecked()
+            and self.loop_b_ms > self.loop_a_ms
+            and position_ms >= self.loop_b_ms
+        ):
+            self.player.setPosition(self.loop_a_ms)
+
+        if self.analysis_result is not None:
+            index = self._root_index_for_position(position_ms / 1000)
+            if index is not None and index != self.selected_root_index:
+                self._select_root(index)
+
+    def _root_index_for_position(self, seconds: float) -> int | None:
+        if self.analysis_result is None:
+            return None
+        for index, root in enumerate(self.analysis_result.roots):
+            if root.start <= seconds < root.end:
+                return index
+        return None
+
+    def _playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
+        if state == QMediaPlayer.PlayingState:
+            self.play_button.setText("Ⅱ PAUSE")
+            self.system_status.setText("● SIGNAL PLAYING")
+        elif state == QMediaPlayer.PausedState:
+            self.play_button.setText("▶ PLAY")
+            self.system_status.setText("● SIGNAL PAUSED")
+        else:
+            self.play_button.setText("▶ PLAY")
+            if self.source_path is not None:
+                self.system_status.setText("● AUDIO LINKED")
+
+    def _player_error(self, error: QMediaPlayer.Error, error_string: str) -> None:
+        if error == QMediaPlayer.NoError:
+            return
+        QMessageBox.critical(self, "再生エラー", error_string or "音源を再生できませんでした。")
+
+    def _start_transform(self) -> None:
+        if self.source_path is None:
+            return
+        if self.transform_worker and self.transform_worker.isRunning():
+            return
+
+        output_dir = Path(tempfile.gettempdir()) / "BassCatcher" / "practice"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        target = output_dir / f"{self.source_path.stem}_practice.wav"
+
+        self._set_busy(True)
+        self.progress_bar.setValue(0)
+        self.transform_worker = TransformWorker(
+            source_path=str(self.source_path),
+            output_path=str(target),
+            tempo_ratio=self.tempo_ratio.value(),
+            semitones=float(self.key_shift.value()),
+        )
+        self.transform_worker.progress.connect(self._analysis_progress)
+        self.transform_worker.completed.connect(self._transform_completed)
+        self.transform_worker.failed.connect(self._transform_failed)
+        self.transform_worker.start()
+
+    def _transform_completed(self, path: str) -> None:
+        self.sources["PRACTICE RENDER"] = Path(path)
+        self._refresh_source_combo()
+        self.source_combo.setCurrentText("PRACTICE RENDER")
+        self._set_busy(False)
+        self.statusBar().showMessage("PRACTICE AUDIO READY")
+
+    def _transform_failed(self, details: str) -> None:
+        self._set_busy(False)
+        QMessageBox.critical(self, "音源変換エラー", self._friendly_error(details))
+
+    def _reset_audio_source(self) -> None:
+        if "ORIGINAL" in self.sources:
+            self.source_combo.setCurrentText("ORIGINAL")
+        self.tempo_ratio.setValue(1.0)
+        self.key_shift.setValue(0)
+
+    def _export_pdf(self) -> None:
+        if self.analysis_result is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "ルート譜PDFを保存",
+            str(Path.home() / f"{self.source_path.stem if self.source_path else 'bass'}_root_chart.pdf"),
+            "PDF (*.pdf)",
+        )
+        if path:
+            export_pdf(self.analysis_result, path)
+            self.statusBar().showMessage(f"PDF EXPORTED // {path}")
+
+    def _export_csv(self) -> None:
+        if self.analysis_result is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "CSVを保存",
+            str(Path.home() / f"{self.source_path.stem if self.source_path else 'bass'}_roots.csv"),
+            "CSV (*.csv)",
+        )
+        if path:
+            export_csv(self.analysis_result, path)
+            self.statusBar().showMessage(f"CSV EXPORTED // {path}")
+
+    def _export_musicxml(self) -> None:
+        if self.analysis_result is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "MusicXMLを保存",
+            str(Path.home() / f"{self.source_path.stem if self.source_path else 'bass'}_roots.musicxml"),
+            "MusicXML (*.musicxml)",
+        )
+        if path:
+            export_musicxml(self.analysis_result, path)
+            self.statusBar().showMessage(f"MUSICXML EXPORTED // {path}")
+
+    def _save_session(self) -> None:
+        if self.analysis_result is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "解析セッションを保存",
+            str(Path.home() / f"{self.source_path.stem if self.source_path else 'bass'}.basscatcher.json"),
+            "Bass Catcher Session (*.basscatcher.json);;JSON (*.json)",
+        )
+        if path:
+            export_session(self.analysis_result, path)
+            self.statusBar().showMessage(f"SESSION SAVED // {path}")
+
+    def _load_session(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "解析セッションを開く",
+            str(Path.home()),
+            "Bass Catcher Session (*.basscatcher.json *.json)",
+        )
+        if not path:
+            return
+
+        try:
+            result = load_session(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "セッション読込エラー", str(exc))
+            return
+
+        source = Path(result.source_path)
+        if not source.exists():
+            QMessageBox.warning(
+                self,
+                "元音源が見つかりません",
+                "解析結果は開けますが、元音源の再生はできません。",
+            )
+            self.analysis_result = result
+            self.timeline.set_result(result)
+            self._populate_root_table()
+            self._set_export_enabled(True)
+            return
+
+        self._load_audio_path(source)
+        self.analysis_result = result
+        self.timeline.set_result(result)
+        self._populate_root_table()
+        self.key_chip.setText(f"KEY {result.key_name}")
+        self.tempo_chip.setText(f"BPM {result.tempo:.1f}")
+        self._set_export_enabled(True)
+        if result.bass_preview_path and Path(result.bass_preview_path).exists():
+            self.sources["BASS FOCUS"] = Path(result.bass_preview_path)
+        if result.isolated_bass_path and Path(result.isolated_bass_path).exists():
+            self.sources["ISOLATED BASS"] = Path(result.isolated_bass_path)
+        self._refresh_source_combo()
+        self.analysis_state_label.setText("ANALYSIS ENGINE: SESSION LOADED")
+
+    def _set_export_enabled(self, enabled: bool) -> None:
+        for button in (
+            self.pdf_button,
+            self.csv_button,
+            self.musicxml_button,
+            self.save_session_button,
+        ):
+            button.setEnabled(enabled)
+
+    def _set_busy(self, busy: bool) -> None:
+        self.analyze_button.setEnabled(not busy and self.source_path is not None)
+        self.render_button.setEnabled(not busy and self.source_path is not None)
+        self.import_button.setEnabled(not busy)
+        self.load_session_button.setEnabled(not busy)
+        self.mode_combo.setEnabled(not busy)
+        self.demucs_check.setEnabled(not busy)
+        if busy:
+            self.system_status.setText("● PROCESSING")
+
+    def _update_optional_engine_labels(self) -> None:
+        basic = "READY" if is_basic_pitch_available() else "NOT INSTALLED"
+        demucs = "READY" if is_demucs_available() else "NOT INSTALLED"
+        self.engine_info.setText(f"BASIC PITCH: {basic}\nDEMUCS: {demucs}")
+        self.demucs_check.setEnabled(is_demucs_available())
+
+    @staticmethod
+    def _divider() -> QFrame:
+        frame = QFrame()
+        frame.setFrameShape(QFrame.VLine)
+        frame.setObjectName("divider")
+        frame.setFixedHeight(28)
+        return frame
+
+    @staticmethod
+    def _format_seconds(milliseconds: int) -> str:
+        seconds = max(0, milliseconds) // 1000
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes:02d}:{seconds:02d}"
+
+    @staticmethod
+    def _friendly_error(details: str) -> str:
+        lines = [line for line in details.strip().splitlines() if line.strip()]
+        if not lines:
+            return "不明なエラーが発生しました。"
+        return "\n".join(lines[-10:])
+
+    @staticmethod
+    def _add_neon_shadow(widget: QWidget, color: str, blur: int) -> None:
+        shadow = QGraphicsDropShadowEffect(widget)
+        shadow.setBlurRadius(blur)
+        shadow.setOffset(0, 0)
+        shadow.setColor(QColor(color))
+        widget.setGraphicsEffect(shadow)
+
+    def _apply_styles(self) -> None:
+        self.setStyleSheet(
+            """
+            QMainWindow, QWidget#root {
+                background: #020409;
+                color: #DDFBFF;
+            }
+            QWidget {
+                font-family: "Yu Gothic UI", "Meiryo", sans-serif;
+                font-size: 12px;
+            }
+            QLabel#appTitle {
+                color: #D9FFFF;
+                font-family: "Consolas", monospace;
+                font-size: 27px;
+                font-weight: 900;
+                letter-spacing: 3px;
+            }
+            QLabel#appSubtitle {
+                color: #5B7F8D;
+                font-family: "Consolas", monospace;
+                font-size: 9px;
+                font-weight: 700;
+                letter-spacing: 2px;
+            }
+            QLabel#systemStatus {
+                color: #00F6FF;
+                border: 1px solid #155B66;
+                border-radius: 5px;
+                background: rgba(0, 246, 255, 16);
+                padding: 8px 11px;
+                font-family: "Consolas", monospace;
+                font-weight: 800;
+            }
+            QLabel#sectionLabel {
+                color: #A9F9FF;
+                font-family: "Consolas", monospace;
+                font-size: 10px;
+                font-weight: 900;
+                letter-spacing: 1px;
+            }
+            QLabel#fileLabel {
+                color: #FF73E1;
+                font-family: "Consolas", monospace;
+                font-weight: 800;
+            }
+            QLabel#analysisState {
+                color: #B34FAB;
+                font-family: "Consolas", monospace;
+                font-size: 9px;
+                font-weight: 700;
+            }
+            QLabel#mutedLabel {
+                color: #607583;
+                font-family: "Consolas", monospace;
+                font-size: 9px;
+            }
+            QLabel#dataChip {
+                min-width: 84px;
+                padding: 7px 8px;
+                border: 1px solid #543052;
+                border-radius: 4px;
+                background: rgba(255, 43, 214, 13);
+                color: #E27AD8;
+                font-family: "Consolas", monospace;
+                font-size: 10px;
+                font-weight: 800;
+            }
+            QLabel#timeLabel, QLabel#controlValue {
+                color: #C9FBFF;
+                font-family: "Consolas", monospace;
+                font-weight: 800;
+            }
+            QLabel#controlLabel {
+                color: #6E8793;
+                font-family: "Consolas", monospace;
+                font-size: 10px;
+                font-weight: 800;
+            }
+            QFrame#divider {
+                color: #4B234A;
+                background: #4B234A;
+                max-width: 1px;
+            }
+            QPushButton {
+                min-height: 34px;
+                padding: 0 13px;
+                border: 1px solid #234B57;
+                border-radius: 5px;
+                background: #08121A;
+                color: #BFEFF4;
+                font-family: "Consolas", monospace;
+                font-weight: 800;
+            }
+            QPushButton:hover {
+                color: #FFFFFF;
+                background: #0D2630;
+                border-color: #00D7E2;
+            }
+            QPushButton:pressed {
+                background: #05090E;
+                border-color: #FF2BD6;
+            }
+            QPushButton:disabled {
+                color: #3A4851;
+                background: #06090D;
+                border-color: #16222A;
+            }
+            QPushButton#primaryButton {
+                min-height: 42px;
+                color: #051014;
+                background: #00F6FF;
+                border-color: #BCFDFF;
+            }
+            QPushButton#primaryButton:hover {
+                color: #0A040B;
+                background: #FF55DC;
+                border-color: #FFD0F5;
+            }
+            QPushButton#actionButton {
+                min-height: 40px;
+                color: #FFFFFF;
+                background: rgba(255, 43, 214, 38);
+                border-color: #AF2D9B;
+            }
+            QPushButton#actionButton:hover {
+                background: #B91EA0;
+                border-color: #FF8DE6;
+            }
+            QComboBox, QSpinBox, QDoubleSpinBox {
+                min-height: 32px;
+                padding: 0 8px;
+                border: 1px solid #244956;
+                border-radius: 4px;
+                background: #071018;
+                color: #D8FBFF;
+                selection-background-color: #71306E;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 22px;
+            }
+            QCheckBox {
+                color: #8CC4CB;
+                font-family: "Consolas", monospace;
+                font-size: 10px;
+                font-weight: 700;
+                spacing: 7px;
+            }
+            QCheckBox::indicator {
+                width: 15px;
+                height: 15px;
+                border: 1px solid #24606A;
+                background: #050A0E;
+            }
+            QCheckBox::indicator:checked {
+                background: #00DCE6;
+                border-color: #A8FAFF;
+            }
+            QSlider::groove:horizontal {
+                height: 5px;
+                border-radius: 2px;
+                background: #101D27;
+                border: 1px solid #17313D;
+            }
+            QSlider::sub-page:horizontal {
+                border-radius: 2px;
+                background: #00DCE6;
+            }
+            QSlider::handle:horizontal {
+                width: 15px;
+                margin: -6px 0;
+                border-radius: 7px;
+                background: #FFFFFF;
+                border: 2px solid #00F6FF;
+            }
+            QProgressBar {
+                min-height: 18px;
+                border: 1px solid #234A56;
+                border-radius: 4px;
+                background: #050A0F;
+                color: #D6FFFF;
+                text-align: center;
+                font-family: "Consolas", monospace;
+                font-size: 9px;
+            }
+            QProgressBar::chunk {
+                background: #00DDE8;
+                border-radius: 3px;
+            }
+            QGroupBox {
+                border: 1px solid #3D2640;
+                border-radius: 6px;
+                margin-top: 9px;
+                padding-top: 9px;
+                color: #D36AC9;
+                font-family: "Consolas", monospace;
+                font-weight: 800;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 9px;
+                padding: 0 5px;
+            }
+            QTableWidget {
+                background: #04080D;
+                alternate-background-color: #08111A;
+                color: #C8E9ED;
+                gridline-color: #17303A;
+                border: 1px solid #1E3D48;
+                selection-background-color: #143F4B;
+                selection-color: #FFFFFF;
+                font-family: "Consolas", monospace;
+                font-size: 10px;
+            }
+            QHeaderView::section {
+                background: #0B1B24;
+                color: #7EC9D0;
+                border: none;
+                border-right: 1px solid #1D3B45;
+                padding: 5px;
+                font-family: "Consolas", monospace;
+                font-size: 9px;
+                font-weight: 800;
+            }
+            QSplitter::handle {
+                background: #07131A;
+                width: 5px;
+            }
+            QStatusBar {
+                color: #547582;
+                background: #010207;
+                border-top: 1px solid #122630;
+                font-family: "Consolas", monospace;
+                font-size: 10px;
+            }
+            QToolTip {
+                color: #D9FFFF;
+                background: #07131B;
+                border: 1px solid #00C5CF;
+                padding: 5px;
+            }
+            """
+        )

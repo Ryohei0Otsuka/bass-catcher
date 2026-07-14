@@ -1,0 +1,3 @@
+-r requirements.txt
+basic-pitch==0.4.0
+demucs>=4.0,<5

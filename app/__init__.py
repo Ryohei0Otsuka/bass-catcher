@@ -1,0 +1,1 @@
+"""Bass Catcher desktop application."""
